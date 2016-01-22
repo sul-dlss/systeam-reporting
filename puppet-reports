@@ -1,0 +1,283 @@
+#!/usr/bin/perl
+#
+# puppetdb-reports - Create a report of various puppetdb statuses for mail
+#
+# Written by Jon Robertson <jonrober@stanford.edu>
+# Copyright 2015
+#     The Board of Trustees of the Leland Stanford Junior University
+
+#############################################################################
+# Modules and declarations
+#############################################################################
+
+use 5.010;
+use autodie;
+use strict;
+use warnings;
+
+use Carp;
+use Getopt::Long::Descriptive;
+use IO::Handle;
+use IO::Select;
+use IPC::Open3;
+use JSON;
+use LWP::UserAgent;
+
+# Our option descriptions, for both defining options and their usage.
+our @OPTIONS = (
+    ['help|h',     'print usage (this text) and exit'],
+    ['manual|man', 'print perldoc and exit'],
+);
+
+my $ROOTDIR        = '/home/jonrober/cms-puppetdb-tools/usr/sbin/';
+my $REPORT_FAILED  = $ROOTDIR . 'puppetdb-failed';
+my $REPORT_TANGLED = $ROOTDIR . 'puppetdb-tangled';
+my $REPORT_QUIET   = $ROOTDIR . 'puppetdb-tooquiet';
+#my $REPORT_FACTS   = $ROOTDIR . 'puppetdb-node-facts';
+
+# For facts we make our own query.
+my $FACT_URL = 'http://sulpuppet-db.stanford.edu:8080/v3/facts';
+
+#############################################################################
+# Misc routines
+#############################################################################
+
+# This is a wrapper around the IPC::Open3 open3 command, that retrieves
+# both the exit status and output of a program, returning both.  It's used
+# for situations where we would normally run with backticks, so that we can
+# also examine the exit status.
+#
+# @prog - Program and arguments to run, given as a list.
+#
+# Returns: exit status
+#          string of output from program
+#  Throws: dies with text on unable to run open3 or error from child proc
+sub system_output {
+    my (@prog) = @_;
+
+    # Run the program.
+    my ($in, $out, $err);
+    my $pid = open3($in, $out, $err, @prog)
+        or croak "$0: error on open3 $prog[0]: $!\n";
+    waitpid($pid, 0);
+    my $exit_status = $? >> 8;
+
+    # Get a select to read in the output responses.
+    my $sel = new IO::Select;
+    $sel->add($out);
+
+    # Now grab all the output together into a string.
+    my $all_out = '';
+    while (my @ready = $sel->can_read) {
+        foreach my $fh (@ready) {
+            my $data;
+            read $fh, $data, 8196;
+            if (!defined $data) {
+                croak "error from child: $!\n";
+            }
+            if (length $data == 0) {
+                $sel->remove($fh);
+                next;
+            } else {
+                $all_out .= $data;
+            }
+        }
+    }
+
+    return ($exit_status, $all_out);
+}
+
+# Clean up the too quiet report a bit by recolumnizing.  The defaults for the
+# report don't look good with our server name length.
+sub clean_tooquiet {
+    my ($too_quiet) = @_;
+
+    my (@prettied);
+    for my $line (split(m{[\r\n]+}, $too_quiet)) {
+        my ($server, $last, $dept) = ($line =~ m{^(\S+)\s+(.+?)\s+(\S+)$});
+        my $formatted = sprintf("%-40s %-29s", $server, $last);
+        push (@prettied, $formatted);
+    }
+
+    return join("\n", @prettied);
+}
+
+# Clean up the failed report to remove the last column.
+sub clean_failed {
+    my ($failed) = @_;
+
+    my (@prettied);
+    for my $line (split(m{[\r\n]+}, $failed)) {
+        my ($server, $dept) = ($line =~ m{^(\S+)\s+(\S+)$});
+        push (@prettied, $server);
+    }
+
+    return join("\n", @prettied);
+}
+
+# We don't want the tangled report in the same state as it gives us here.
+# Just filter out to only the server names and nothing else.
+sub clean_tangled {
+    my ($tangled) = @_;
+
+    my (%servers);
+    for my $line (split(m{[\r\n]+}, $tangled)) {
+        my ($server) = ($line =~ m{^(\S+) });
+        next unless defined $server;
+        $servers{$server} = 1;
+    }
+
+    return join("\n", sort(keys %servers));
+}
+
+# Do a search for all servers with an environment set, then report on any
+# that should not be normally in that environment.
+sub environment_report {
+
+    # printf format for our lines.
+    my $format = "%-40s %s";
+
+    # Create and make the request to the puppetdb service.
+    my $ua = LWP::UserAgent->new;
+    $ua->agent('find-class-nodes');
+    my $req = HTTP::Request->new(GET => $FACT_URL . '/environment');
+    my $res = $ua->request($req);
+
+    # Check the outcome of the response
+    if (!$res->is_success) {
+        die ($res->status_line . "\n");
+    } elsif ($res->content eq '') {
+        die ("no records returned\n");
+    }
+
+    # Translate the response from JSON and print out the node names.
+    my (%environments);
+    my $json_obj = JSON->new->allow_nonref;
+    my $nodes = $json_obj->decode($res->content);
+
+    foreach my $node (@{$nodes}) {
+        $environments{$node->{certname}} = $node->{value};
+    }
+
+    my (@report);
+    for my $server (sort keys %environments) {
+        my $environment = $environments{$server};
+
+        # Any user environments should be reported on.
+        if ($environment ne 'production' && $environment ne 'testing') {
+            push (@report, sprintf($format, $server, $environment));
+
+        } else {
+
+            # Check the server name to see if it matches a dev server.
+            my $is_dev = 0;
+            if ($server =~ m{-(stage|dev)}) {
+                $is_dev = 1;
+            } elsif ($server =~ m{^dlss-dev-}) {
+                $is_dev = 1;
+            }
+
+            # Report on dev servers not in testing, or non-devs not on prod.
+            # TODO: Uncomment and update this when we have a better handle
+            #       on how we want to do this.
+#            if ($is_dev && $environment ne 'testing') {
+#                push (@report, sprintf($format, $server, $environment));
+#            } elsif (!$is_dev && $environment ne 'production') {
+#               push (@report, sprintf($format, $server, $environment));
+#            }
+        }
+    }
+
+    return join("\n", @report);
+}
+
+#############################################################################
+# Main routine
+#############################################################################
+
+# Get errors and output in the same order.
+STDOUT->autoflush;
+
+# Clean up the path name.
+my $fullpath = $0;
+$0 =~ s{ ^ .* / }{}xms;
+
+# Parse command-line options.
+my ($options, $usage) = describe_options("$0 %o <args>", @OPTIONS);
+if ($options->manual) {
+    print "Feeding myself to perldoc, please wait....\n";
+    exec 'perldoc', '-t', $fullpath;
+} elsif ($options->help) {
+    print $usage->text;
+    exit 0;
+}
+
+my ($retval, $tangled, $too_quiet, $failed, $facts);
+($retval, $tangled) = system_output($REPORT_TANGLED);
+if ($retval != 0) {
+    warn "Running the tangled report had errors: $tangled\n";
+}
+print "Tangled servers (puppet keeps trying to do the same thing)\n";
+print "==========================================================\n";
+print clean_tangled($tangled), "\n\n";
+
+($retval, $too_quiet) = system_output($REPORT_QUIET);
+if ($retval != 0) {
+    warn "Running the too quiet report had errors: $too_quiet\n";
+}
+print "Servers that have not checked in lately\n";
+print "=======================================\n";
+print clean_tooquiet($too_quiet), "\n\n";
+
+($retval, $failed) = system_output($REPORT_FAILED);
+if ($retval != 0) {
+    warn "Running the failed report had errors: $failed\n";
+}
+print "Servers whose last run failed\n";
+print "=============================\n";
+print clean_failed($failed), "\n\n";
+
+print "Servers in the wrong environment\n";
+print "================================\n";
+print environment_report(), "\n";
+
+exit(0);
+__END__
+
+##############################################################################
+# Documentation
+##############################################################################
+
+=head1 NAME
+
+puppetdb-reports - Create a report of various puppetdb statuses for mail
+
+=head1 SYNOPSIS
+
+B<puppetdb-reports> [B<-h>] [B<--manual>]
+
+=head1 DESCRIPTION
+
+This runs several puppetdb reports for tangled, quiet, failed, and servers in
+the wrong environment.  Most of these do rely on Tim Skirvin's puppetdb tools,
+available at https://github.com/tskirvin/cms-puppetdb-tools.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h>, B<--help>
+
+Prints a short command summary for the script.
+
+=item B<--manual>, B<--man>
+
+Prints the perldoc information (this document) for the script.
+
+=back
+
+=head1 AUTHORS
+
+Jon Robertson <jonrober@stanford.edu>
+
+=cut

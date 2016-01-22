@@ -1,0 +1,287 @@
+#!/usr/bin/python
+
+#########################################################################
+### Configuration #######################################################
+#########################################################################
+
+config_file = '/etc/puppetdb/puppetdb.json'
+
+sysadmins  = [
+    'azanella',
+    'calavt',
+    'efahy',
+    'jmorley',
+    'jonrober',
+    'kamchan',
+    'rsmith11',
+    'ssklar',
+]
+
+developers = [
+    'atz',
+    'awinget',
+    'azaroth',
+    'bess',
+    'blalbrit',
+    'cabeer',
+    'dlweber',
+    'drh',
+    'geisler',
+    'jchris',
+    'jkeck',
+    'laneymcg',
+    'lmcrae',
+    'ndushay',
+    'ntay',
+    'petucket',
+    'pjreed',
+    'rmetz',
+    'suntzu',
+    'tommyi',
+]
+
+system = [
+    'apache',
+    'apt',
+    'chron',
+    'drupal',
+    'ezproxy',
+    'hadoop',
+    'nagiosuser',
+    'netdb-server',
+    'nfsnobody',
+    'oracle',
+    'puppet',
+    'root',
+    'splunk',
+    'stats',
+    'sultsm0',
+    'sultsm10',
+    'sultsm20',
+    'sultsm30',
+    'sultsm99',
+    'tftp',
+    'tomcat',
+]
+
+groups = [
+    'bibliopedia',
+    'blacklight',
+    'cidr',
+    'consul',
+    'curator',
+    'dewi',
+    'directory',
+    'dpglab',
+    'eems',
+    'embed',
+    'etd',
+    'exhibits',
+    'explorer',
+    'flexlm',
+    'geostaff',
+    'harvestdor',
+    'htext',
+    'htext_user',
+    'image_viewer',
+    'libhours',
+    'library_hours',
+    'loris',
+    'lyberadmin',
+    'mathlm',
+    'ntirety',
+    'parker',
+    'purl',
+    'releases',
+    'requests',
+    'reserves',
+    'sandbox',
+    'sdr2service',
+    'solr',
+    'squeezer',
+    'stacks'
+    'sulmuse',
+    'was',
+    'webteam',
+    'wowza',
+    'xtf',
+    'zkeeper',
+]
+
+#########################################################################
+### Declarations ########################################################
+#########################################################################
+
+import json, optparse, re, requests, sys
+from collections import defaultdict
+
+#########################################################################
+### JSON Parsing Subroutines ############################################
+#########################################################################
+
+def parseConfig(file):
+    """
+    Load a json configuration from a configuration file.  Sets a global
+    'config' variable.
+    """
+    global config
+
+    try:
+        config = json.load(open(config_file, 'r'))
+    except IOError, e:
+        print "file error:  %s" % e
+        sys.exit (2)
+    except Exception, e:
+        print "unknown error:  %s" % e
+        sys.exit (2)
+
+    return config
+
+#########################################################################
+### PuppetDB Query Subroutines ##########################################
+#########################################################################
+
+def queryResourcesPuppetDb(type, data):
+    """
+    Query the puppetdb resources endpoint.  Type 'type' is required, and
+    should have the first letter upper-case (matching the puppet internals).
+    Hash data can have:
+
+       hostname     Only match on this hostname.  Can include wildcards.
+
+    Returns an array of matching json entries.
+    """
+
+    fields = []
+    fields.append ("['=', 'type', '%s']" % type)
+    if data['hostname']:
+        fields.append ("['~', 'certname', '^%s$' ]" % data['hostname'])
+    query = "['and', %s]" % (', '.join(fields))
+
+    try:
+        payload = { 'query': json.dumps(eval(query)) }
+    except SyntaxError:
+        print 'Malformed query: %s' % query
+        return {}
+
+    headers = {'Accept': 'application/json'}
+    try:
+        resources_url = "%s%s" % ( opt.server, opt.url_base )
+        r = requests.get(resources_url, headers=headers, params=payload,
+                         verify=False)
+    except Exception, e:
+        print '%s (bad json?: %s)' % (e, payload)
+        raise e
+
+    if len(r.json()) == 0:
+        return []
+
+    nodes = []
+    for node in r.json():
+        nodes.append(node)
+
+    return nodes
+
+#########################################################################
+### main () #############################################################
+#########################################################################
+
+def main():
+    usage = "%prog [options] Class"
+    parseConfig(config_file)
+
+    p = optparse.OptionParser (usage = usage,
+        description = "query puppetdb resources endpoint")
+    p.add_option ('--server', dest='server', default=config['server'],
+        help="puppetdb server (default: %default)")
+    p.add_option ('--url_base', dest='url_base',
+        default=config['resources_url_base'],
+        help="relative URL to puppetdb for default resources query")
+    p.add_option ('--hostname', dest='hostname',
+        default=None,
+        help="hostname to query (default: all hosts)")
+
+    global opt
+    opt, args = p.parse_args()
+
+    classname = 'User'
+    servers = defaultdict(list)
+
+    try:
+        nodes = queryResourcesPuppetDb(classname, { 'hostname': opt.hostname})
+        if not nodes:
+            print "no matches"
+        for i in nodes:
+            server = i['certname']
+            name = i['title']
+            servers[server].append(name)
+    except Exception, e:
+        print "error: %s" % e
+        sys.exit(-1)
+
+    for server in sorted(servers):
+        found = 0
+        developer = 0
+        for user in sorted(set(servers[server])):
+            if (user not in sysadmins and user not in system
+                and user not in groups):
+
+                found = 1
+                if (user in developers):
+                    developer = 1
+                else:
+                    print '{0:40} {1}'.format(server, user)
+
+        if (developer == 1):
+            print '{0:40} {1}'.format(server, 'Developers')
+        if (found == 1):
+            print
+
+    sys.exit(0)
+
+if __name__ == '__main__':
+    main()
+
+#########################################################################
+### POD Documentation ###################################################
+#########################################################################
+## We use this to generate man pages.
+
+"""
+
+=head1 NAME
+
+puppetdb-users - Report on puppetdb nodes with non-systeam, non-system users
+
+=head1 SYNOPSYS
+
+B<puppetdb-users>
+
+=head1 USAGE
+
+puppetdb-resources queries the central puppetdb resources type for all users on
+each server.  This then uses a few lists of known users to remove accounts that
+should always be on the system and system accounts.  Another list is used to
+gather together any developers into just one entry that shows that there are
+known developers on the box.  Any servers with the developers pseudo-user or
+unknown users are then reported on.
+
+This is meant to do quarterly reporting on all users on our systems for
+auditing purposes.
+
+=head1 AUTHORS
+
+Jon Robertson <jonrober@stanford.edu>
+adapted from puppetdb-resouces by Tim Skirvin <tskirvin@fnal.gov>
+
+=head1 COPYRIGHT
+
+Originally copyright 2015, Fermi National Accelerator Laboratory
+Additions copyright 2016, The Board of Trustees of the Leland Stanford Junior University
+
+This program is free software; you may redistribute it and/or modify
+it under the same terms as Perl itself.
+
+=cut
+
+"""
