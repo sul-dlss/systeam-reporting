@@ -29,7 +29,7 @@ our @OPTIONS = (
     ['manual|man', 'print perldoc and exit'],
 );
 
-my $ROOTDIR        = '/home/jonrober/cms-puppetdb-tools/usr/sbin/';
+my $ROOTDIR        = '/opt/app/reports/cms-puppetdb-tools/usr/sbin/';
 my $REPORT_FAILED  = $ROOTDIR . 'puppetdb-failed';
 my $REPORT_TANGLED = $ROOTDIR . 'puppetdb-tangled';
 my $REPORT_QUIET   = $ROOTDIR . 'puppetdb-tooquiet';
