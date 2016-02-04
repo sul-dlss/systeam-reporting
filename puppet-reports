@@ -27,13 +27,13 @@ use LWP::UserAgent;
 our @OPTIONS = (
     ['help|h',     'print usage (this text) and exit'],
     ['manual|man', 'print perldoc and exit'],
+    ['email|e=s',  'send as an email to the given address'],
 );
 
 my $ROOTDIR        = '/opt/app/reports/cms-puppetdb-tools/usr/sbin/';
 my $REPORT_FAILED  = $ROOTDIR . 'puppetdb-failed';
 my $REPORT_TANGLED = $ROOTDIR . 'puppetdb-tangled';
 my $REPORT_QUIET   = $ROOTDIR . 'puppetdb-tooquiet';
-#my $REPORT_FACTS   = $ROOTDIR . 'puppetdb-node-facts';
 
 # For facts we make our own query.
 my $FACT_URL = 'http://sulpuppet-db.stanford.edu:8080/v3/facts';
@@ -41,6 +41,21 @@ my $FACT_URL = 'http://sulpuppet-db.stanford.edu:8080/v3/facts';
 #############################################################################
 # Misc routines
 #############################################################################
+
+# Send off the report.
+sub mail_report {
+    my ($to, $contents) = @_;
+
+    open (MAIL, '| /usr/sbin/sendmail -t -oi -oem')
+        or die "$0: cannot fork sendmail: $!\n";
+
+    print MAIL "To: $to\n";
+    print MAIL "From: nobody\@stanford.edu\n";
+    print MAIL "Subject: Puppet Server Status\n";
+    print MAIL "\n";
+    print MAIL $contents;
+    close (MAIL);
+}
 
 # This is a wrapper around the IPC::Open3 open3 command, that retrieves
 # both the exit status and output of a program, returning both.  It's used
@@ -212,35 +227,44 @@ if ($options->manual) {
     exit 0;
 }
 
-my ($retval, $tangled, $too_quiet, $failed, $facts);
+my ($retval, $tangled, $too_quiet, $failed, $facts, $output);
 ($retval, $tangled) = system_output($REPORT_TANGLED);
 if ($retval != 0) {
     warn "Running the tangled report had errors: $tangled\n";
 }
-print "Tangled servers (puppet keeps trying to do the same thing)\n";
-print "==========================================================\n";
-print clean_tangled($tangled), "\n\n";
+$output .= "Tangled servers (puppet keeps trying to do the same thing)\n";
+$output .= "==========================================================\n";
+$output .= clean_tangled($tangled);
+$output .= "\n\n";
 
 ($retval, $too_quiet) = system_output($REPORT_QUIET);
 if ($retval != 0) {
     warn "Running the too quiet report had errors: $too_quiet\n";
 }
-print "Servers that have not checked in lately\n";
-print "=======================================\n";
-print clean_tooquiet($too_quiet), "\n\n";
+$output .= "Servers that have not checked in lately\n";
+$output .= "=======================================\n";
+$output .= clean_tooquiet($too_quiet);
+$output .= "\n\n";
 
 ($retval, $failed) = system_output($REPORT_FAILED);
 if ($retval != 0) {
     warn "Running the failed report had errors: $failed\n";
 }
-print "Servers whose last run failed\n";
-print "=============================\n";
-print clean_failed($failed), "\n\n";
+$output .= "Servers whose last run failed\n";
+$output .= "=============================\n";
+$output .= clean_failed($failed);
+$output .= "\n\n";
 
-print "Servers in the wrong environment\n";
-print "================================\n";
-print environment_report(), "\n";
+$output .= "Servers in the wrong environment\n";
+$output .= "================================\n";
+$output .= environment_report();
+$output .= "\n";
 
+if ($options->email) {
+    mail_report($options->email, $output);
+} else {
+    print $output;
+}
 exit(0);
 __END__
 
