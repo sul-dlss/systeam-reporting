@@ -114,6 +114,7 @@ groups = [
 
 import json, optparse, re, requests, sys
 from collections import defaultdict
+import smtplib
 
 #########################################################################
 ### JSON Parsing Subroutines ############################################
@@ -200,6 +201,9 @@ def main():
     p.add_option ('--hostname', dest='hostname',
         default=None,
         help="hostname to query (default: all hosts)")
+    p.add_option ('--email', dest='email',
+        default=None,
+        help="email address to send to (default: none)")
 
     global opt
     opt, args = p.parse_args()
@@ -207,10 +211,12 @@ def main():
     classname = 'User'
     servers = defaultdict(list)
 
+    output = ''
     try:
         nodes = queryResourcesPuppetDb(classname, { 'hostname': opt.hostname})
         if not nodes:
             print "no matches"
+            sys.exit(-1)
         for i in nodes:
             server = i['certname']
             name = i['title']
@@ -230,12 +236,23 @@ def main():
                 if (user in developers):
                     developer = 1
                 else:
-                    print '{0:40} {1}'.format(server, user)
+                    output += '{0:40} {1}'.format(server, user) + "\n"
 
         if (developer == 1):
-            print '{0:40} {1}'.format(server, 'Developers')
+            output += '{0:40} {1}'.format(server, 'Developers') + "\n"
         if (found == 1):
-            print
+            output += "\n"
+
+    if opt.email:
+        fromaddr = 'nobody@stanford.edu'
+        toaddr = opt.email
+        header = ("From:{0}\nTo:{1}\nSubject: Quarterly System Users\n\n").format(fromaddr, toaddr)
+        server = smtplib.SMTP('localhost')
+        server.sendmail(fromaddr, toaddr, header + output)
+        server.quit()
+
+    else:
+        print output
 
     sys.exit(0)
 
