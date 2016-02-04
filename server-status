@@ -226,7 +226,7 @@ my %hosts;
 if ($options->netdb) {
     %hosts = (%netdb, %puppet, %vmware);
 } else {
-    %hosts = (%netdb, %puppet, %vmware);
+    %hosts = (%puppet, %vmware);
 }
 my %alive    = map { $_ => 1 } check_dns(keys %hosts);
 
