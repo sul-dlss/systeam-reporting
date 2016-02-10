@@ -8,13 +8,15 @@ require 'mcollective'
 include MCollective::RPC
 
 # Create the dumps directory if it does not yet exist.
-servers_dir = '/tmp/packages/'
+servers_dir = '/var/lib/package-reports/'
 #unless Dir.exists?(servers_dir)
 #  Dir.mkdir(servers_dir)
 #end
 
-# Call the report in batches of 10, with 5s sleep between each batch.
+# Call the report in batches of 10, with 5s sleep between each batch.  Disable
+# the progress bar since this'll normally be run via cron.
 mc = rpcclient('packagereport')
+mc.progress = false
 mc.batch_size = 10
 mc.batch_sleep_time = 5
 
