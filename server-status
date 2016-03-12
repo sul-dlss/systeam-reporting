@@ -92,16 +92,17 @@ sub check_dns {
 sub find_all_vms {
     my $output = `remctl sulcobbler ezmomi list --type VirtualMachine`;
 
-    my @servers = ();
+    my %servers = ();
     for my $line (split(m{[\r\n]+}, $output)) {
         next if $line =~ m{^VirtualMachine list};
         next if $line =~ m{^MOID };
 
         my ($id, $hostname, $status) = split(m{\s+}, $line);
-        push(@servers, $hostname);
+        $status =~ s{powered}{};
+        $servers{$hostname} = $status;
     }
 
-    return sort(@servers);
+    return %servers;
 }
 
 # Find hiera status using a remctl command on the puppet machines.
@@ -228,14 +229,16 @@ if ($options->manual) {
     exit 0;
 }
 
+# TODO: Replace the netdb flag with a flag that filters out from a list of
+#       servers (the VM host boxes and templates).
+
 my %hiera    = find_hiera_status();
-my %vmware   = map { $_ => 1 } find_all_vms();
+my %vmware   = find_all_vms();
 my %netdb    = map { $_ => 1 } find_all_netdb();
 my %cobbler  = map { $_ => 1 } find_all_cobbler();
 my %puppet   = map { $_ => 1 } puppetdb_hosts();
 my %splunk   = map { $_ => 1 } puppetdb_query('Class', 'Splunk');
 my %diamond  = map { $_ => 1 } puppetdb_query('Class', 'Diamond');
-my %mco      = map { $_ => 1 } puppetdb_query('Class', 'Mcollective');
 
 my %hosts;
 if ($options->netdb) {
@@ -246,13 +249,13 @@ if ($options->netdb) {
 my %alive    = map { $_ => 1 } check_dns(keys %hosts);
 
 my $output;
-$output .= sprintf("%-40s %-8s %-8s %-8s %-8s\n", 'Host', 'Sources',
-                   'Splunk', 'Diamond', 'Mco', 'Hiera');
+$output .= sprintf("%-40s %-8s %-6s %-8s %-8s %-8s\n", 'Host', 'Sources',
+                   'Status', 'Splunk', 'Diamond', 'Hiera');
 for my $host (sort keys %hosts) {
     my $splunk  = exists $splunk{$host}  ? 'Yes'         : 'No';
     my $diamond = exists $diamond{$host} ? 'Yes'         : 'No';
-    my $mco     = exists $mco{$host}     ? 'Yes'         : 'No';
     my $hiera   = exists $hiera{$host}   ? $hiera{$host} : '-';
+    my $status  = exists $vmware{$host}  ? $vmware{$host} : '?';
 
     my @sources = (' ', ' ', ' ', ' ');
     $sources[0] = 'P' if exists $puppet{$host};
@@ -266,8 +269,8 @@ for my $host (sort keys %hosts) {
         $splunk = 'N/A' if $splunk eq 'No';
     }
 
-    $output .= sprintf("%-40s %-8s %-8s %-8s %-8s %-8s\n", $host, $sources,
-                       $splunk, $diamond, $mco, $hiera);
+    $output .= sprintf("%-40s %-8s %-6s %-8s %-8s %-8s\n", $host, $sources,
+                       $status, $splunk, $diamond, $hiera);
 }
 
 $output .= "\n";
