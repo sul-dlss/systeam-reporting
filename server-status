@@ -127,6 +127,19 @@ sub find_all_netdb {
     return sort(@servers);
 }
 
+# Find all servers that are set up in cobbler on sulcobbler.
+sub find_all_cobbler {
+    my $output = `remctl sulcobbler cobbler system list`;
+    my @servers = ();
+    for my $hostname (split(m{[\r\n]+}, $output)) {
+        chomp $hostname;
+        $hostname =~ s{^\s+}{};
+        push(@servers, $hostname);
+    }
+
+    return sort(@servers);
+}
+
 #############################################################################
 # PuppetDB queries
 #############################################################################
@@ -218,30 +231,34 @@ if ($options->manual) {
 my %hiera    = find_hiera_status();
 my %vmware   = map { $_ => 1 } find_all_vms();
 my %netdb    = map { $_ => 1 } find_all_netdb();
+my %cobbler  = map { $_ => 1 } find_all_cobbler();
 my %puppet   = map { $_ => 1 } puppetdb_hosts();
 my %splunk   = map { $_ => 1 } puppetdb_query('Class', 'Splunk');
 my %diamond  = map { $_ => 1 } puppetdb_query('Class', 'Diamond');
+my %mco      = map { $_ => 1 } puppetdb_query('Class', 'Mcollective');
 
 my %hosts;
 if ($options->netdb) {
-    %hosts = (%netdb, %puppet, %vmware);
+    %hosts = (%netdb, %puppet, %vmware, %cobbler);
 } else {
-    %hosts = (%puppet, %vmware);
+    %hosts = (%puppet, %vmware, %cobbler);
 }
 my %alive    = map { $_ => 1 } check_dns(keys %hosts);
 
 my $output;
 $output .= sprintf("%-40s %-8s %-8s %-8s %-8s\n", 'Host', 'Sources',
-                   'Splunk', 'Diamond', 'Hiera');
+                   'Splunk', 'Diamond', 'Mco', 'Hiera');
 for my $host (sort keys %hosts) {
     my $splunk  = exists $splunk{$host}  ? 'Yes'         : 'No';
     my $diamond = exists $diamond{$host} ? 'Yes'         : 'No';
+    my $mco     = exists $mco{$host}     ? 'Yes'         : 'No';
     my $hiera   = exists $hiera{$host}   ? $hiera{$host} : '-';
 
-    my @sources = (' ', ' ', ' ');
+    my @sources = (' ', ' ', ' ', ' ');
     $sources[0] = 'P' if exists $puppet{$host};
     $sources[1] = 'N' if exists $netdb{$host};
     $sources[2] = 'V' if exists $vmware{$host};
+    $sources[3] = 'C' if exists $cobbler{$host};
     my $sources = join(' ', @sources);
 
     # Splunk doesn't need to be on non-prod boxes.
@@ -249,18 +266,19 @@ for my $host (sort keys %hosts) {
         $splunk = 'N/A' if $splunk eq 'No';
     }
 
-    $output .= sprintf("%-40s %-8s %-8s %-8s %-8s\n", $host, $sources,
-                       $splunk, $diamond, $hiera);
+    $output .= sprintf("%-40s %-8s %-8s %-8s %-8s %-8s\n", $host, $sources,
+                       $splunk, $diamond, $mco, $hiera);
 }
 
 $output .= "\n";
-$output .= "Sources: P = Puppet, N = NetDB, V = VMWare\n";
+$output .= "Sources: P = Puppet, N = NetDB, V = VMWare, C = Cobbler\n";
 
 if ($options->email) {
     mail_report($options->email, $output);
 } else {
     print $output;
 }
+
 exit 0;
 
 __END__
