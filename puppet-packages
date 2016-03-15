@@ -1,0 +1,169 @@
+#!/usr/bin/perl
+#
+# puppet-packages - Create a report of all puppet defined packages
+#
+# Written by Jon Robertson <jonrober@stanford.edu>
+# Copyright 2016
+#     The Board of Trustees of the Leland Stanford Junior University
+
+#############################################################################
+# Modules and declarations
+#############################################################################
+
+use 5.010;
+use autodie;
+use strict;
+use warnings;
+
+use Carp;
+use Getopt::Long::Descriptive;
+use JSON;
+use LWP::UserAgent;
+
+# Our option descriptions, for both defining options and their usage.
+our @OPTIONS = (
+    ['help|h',     'print usage (this text) and exit'],
+    ['manual|man', 'print perldoc and exit'],
+    ['email|e=s',  'send as an email to the given address'],
+    ['long',       'include the hosts these packages are installed on'],
+);
+
+my $PUPPETDB_RESOURCES = 'http://sulpuppet-db.stanford.edu:8080/v3/resources';
+
+#############################################################################
+# Misc routines
+#############################################################################
+
+# Send off the report.
+sub mail_report {
+    my ($to, $contents) = @_;
+
+    open (MAIL, '| /usr/sbin/sendmail -t -oi -oem')
+        or die "$0: cannot fork sendmail: $!\n";
+
+    print MAIL "To: $to\n";
+    print MAIL "From: nobody\@stanford.edu\n";
+    print MAIL "Subject: Puppet Server Status\n";
+    print MAIL "\n";
+    print MAIL $contents;
+    close (MAIL);
+}
+
+# Given a type and title, perform a puppetdb API query for any nodes matching
+# those two settings.  Returns a sorted list of node names.
+sub puppetdb_resources {
+    my ($type, $title) = @_;
+
+    # Create and make the request to the puppetdb service.
+    my $ua = LWP::UserAgent->new;
+    $ua->agent('server-status');
+    my $req = HTTP::Request->new(GET => $PUPPETDB_RESOURCES . '/Package');
+    my $res = $ua->request($req);
+
+    # Check the outcome of the response
+    if (!$res->is_success) {
+        die "could not connect to puppetdb: " . $res->status_line . "\n";
+    } elsif ($res->content eq '') {
+        warn "no records returned when searching for $type=$title\n";
+        return();
+    }
+
+    # Translate the response from JSON and get all the node names.
+    my %servers = ();
+    my $json_obj = JSON->new->allow_nonref;
+    my $nodes = $json_obj->decode($res->content);
+    foreach my $node (@{$nodes}) {
+        my $package = $node->{title};
+        my $hostname = $node->{certname};
+        $hostname =~ s{\.stanford\.edu$}{};
+        push (@{$servers{$package}}, $hostname);
+    }
+
+    return %servers;
+}
+
+#############################################################################
+# Main routine
+#############################################################################
+
+# Get errors and output in the same order.
+STDOUT->autoflush;
+
+# Clean up the path name.
+my $fullpath = $0;
+$0 =~ s{ ^ .* / }{}xms;
+
+# Parse command-line options.
+my ($options, $usage) = describe_options("$0 %o <args>", @OPTIONS);
+if ($options->manual) {
+    print "Feeding myself to perldoc, please wait....\n";
+    exec 'perldoc', '-t', $fullpath;
+} elsif ($options->help) {
+    print $usage->text;
+    exit 0;
+}
+
+my $output = '';
+my %packages = puppetdb_resources();
+for my $package (sort keys %packages) {
+    my $count = scalar @{$packages{$package}};
+    $output .= sprintf("%-30s (%i)\n", $package, $count);
+    if ($options->long) {
+        for my $server (sort @{ $packages{$package} }) {
+            $output .= "\t$server\n";
+        }
+    }
+}
+
+if ($options->email) {
+    mail_report($options->email, $output);
+} else {
+    print $output;
+}
+exit(0);
+__END__
+
+##############################################################################
+# Documentation
+##############################################################################
+
+=head1 NAME
+
+puppet-packages - Create a report of all puppet defined packages
+
+=head1 SYNOPSIS
+
+B<puppet-packages> [B<-h>] [B<--manual>] [B<--long>] [B<--email=ADDR>]
+
+=head1 DESCRIPTION
+
+This runs a puppetdb query for all packages managed by puppet.  It then prints
+a basic report on the packages and the number of servers they are defined on.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h>, B<--help>
+
+Prints a short command summary for the script.
+
+=item B<--manual>, B<--man>
+
+Prints the perldoc information (this document) for the script.
+
+=item B<--email=ADDR>
+
+Email the report to the given address rather than printing to stdout.
+
+=item B<--long>
+
+Print out the actual hosts each package is defined on.
+
+=back
+
+=head1 AUTHORS
+
+Jon Robertson <jonrober@stanford.edu>
+
+=cut
