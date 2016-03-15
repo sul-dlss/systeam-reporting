@@ -130,7 +130,7 @@ sub find_all_netdb {
 
 # Find all servers that are set up in cobbler on sulcobbler.
 sub find_all_cobbler {
-    my $output = `remctl sulcobbler cobbler system list`;
+    my $output = `remctl sulcobbler cobbler-create system-list`;
     my @servers = ();
     for my $hostname (split(m{[\r\n]+}, $output)) {
         chomp $hostname;
