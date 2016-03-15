@@ -27,12 +27,17 @@ our @OPTIONS = (
     ['help|h',     'print usage (this text) and exit'],
     ['manual|man', 'print perldoc and exit'],
     ['email|e=s',  'send as an email to the given address'],
-    ['netdb',      'show systems that are only in netdb'],
+    ['all-hosts',  'show even systems we normally skip via regex'],
 );
 
 my $PUPPETDB_RESOURCES = 'http://sulpuppet-db.stanford.edu:8080/v3/resources';
 my $PUPPETDB_QUERY_FMT = 'query=["and", ["=", "type", "%s"], ["=", "title", "%s"]]';
 my $PUPPETDB_NODES     = 'http://sulpuppet-db.stanford.edu:8080/v3/nodes';
+
+# A list of regular expressions for hosts that we don't normally want to see
+# in our reports.  These should only be shown during quarterly reports for
+# doing a full check of all our host statuses.
+my @SKIP_HOSTS = ('^sulhp-\d+', '^SUL-', '^fh-c\d+', '^sul-cycl-');
 
 #############################################################################
 # Email functions
@@ -90,16 +95,18 @@ sub check_dns {
 # Find a list of all virtual machines.  This uses the ezmomi python script to
 # do the actual search, then parses the output.
 sub find_all_vms {
-    my $output = `remctl sulcobbler ezmomi list --type VirtualMachine`;
+    my $output = `remctl leavenworth vm-misc list`;
 
     my %servers = ();
     for my $line (split(m{[\r\n]+}, $output)) {
-        next if $line =~ m{^VirtualMachine list};
-        next if $line =~ m{^MOID };
+        next if $line =~ m{^Name };
 
-        my ($id, $hostname, $status) = split(m{\s+}, $line);
+        my ($host, $status, $template, $cpus, $mem) = split(m{\s+}, $line);
         $status =~ s{powered}{};
-        $servers{$hostname} = $status;
+        $servers{$host}{'status'} = $status;
+        $servers{$host}{'template'} = $template;
+        $servers{$host}{'cpus'} = $cpus;
+        $servers{$host}{'memory'} = $mem;
     }
 
     return %servers;
@@ -209,6 +216,21 @@ sub puppetdb_query {
 }
 
 #############################################################################
+# Filtering
+#############################################################################
+
+# Do a simple check to see if a host is in a list of regular expressions of
+# hosts we want to ignore.  This will let us normally skip things such as
+# our VMware servers, which we only want to see during quarterly reports.
+sub skip_host {
+    my ($host) = @_;
+    for my $match (@SKIP_HOSTS) {
+        return 1 if $host =~ m{$match};
+    }
+    return 0;
+}
+
+#############################################################################
 # Main routine
 #############################################################################
 
@@ -229,8 +251,8 @@ if ($options->manual) {
     exit 0;
 }
 
-# TODO: Replace the netdb flag with a flag that filters out from a list of
-#       servers (the VM host boxes and templates).
+# TODO: Use vmware to tell whether or not a server is a template and skip
+#       if so.
 
 my %hiera    = find_hiera_status();
 my %vmware   = find_all_vms();
@@ -240,22 +262,21 @@ my %puppet   = map { $_ => 1 } puppetdb_hosts();
 my %splunk   = map { $_ => 1 } puppetdb_query('Class', 'Splunk');
 my %diamond  = map { $_ => 1 } puppetdb_query('Class', 'Diamond');
 
-my %hosts;
-if ($options->netdb) {
-    %hosts = (%netdb, %puppet, %vmware, %cobbler);
-} else {
-    %hosts = (%puppet, %vmware, %cobbler);
-}
+my %hosts = (%netdb, %puppet, %vmware, %cobbler);
 my %alive    = map { $_ => 1 } check_dns(keys %hosts);
 
 my $output;
 $output .= sprintf("%-40s %-8s %-6s %-8s %-8s %-8s\n", 'Host', 'Sources',
                    'Status', 'Splunk', 'Diamond', 'Hiera');
 for my $host (sort keys %hosts) {
-    my $splunk  = exists $splunk{$host}  ? 'Yes'         : 'No';
-    my $diamond = exists $diamond{$host} ? 'Yes'         : 'No';
-    my $hiera   = exists $hiera{$host}   ? $hiera{$host} : '-';
-    my $status  = exists $vmware{$host}  ? $vmware{$host} : '?';
+    next if !$options->all_hosts && skip_host($host);
+    next if !$options->all_hosts && exists $vmware{$host}
+        && $vmware{$host}{'template'} eq 'True';
+
+    my $splunk  = exists $splunk{$host}  ? 'Yes'                    : 'No';
+    my $diamond = exists $diamond{$host} ? 'Yes'                    : 'No';
+    my $hiera   = exists $hiera{$host}   ? $hiera{$host}            : '-';
+    my $status  = exists $vmware{$host}  ? $vmware{$host}{'status'} : '-';
 
     my @sources = (' ', ' ', ' ', ' ');
     $sources[0] = 'P' if exists $puppet{$host};
