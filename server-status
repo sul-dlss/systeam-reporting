@@ -95,7 +95,7 @@ sub check_dns {
 # Find a list of all virtual machines.  This uses the ezmomi python script to
 # do the actual search, then parses the output.
 sub find_all_vms {
-    my $output = `remctl leavenworth vm-misc list`;
+    my $output = `remctl sulcobbler vm-misc list`;
 
     my %servers = ();
     for my $line (split(m{[\r\n]+}, $output)) {
