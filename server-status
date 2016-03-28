@@ -18,6 +18,7 @@ use warnings;
 use JSON;
 use LWP::UserAgent;
 use Net::DNS::Resolver;
+use YAML;
 
 use Getopt::Long::Descriptive;
 use IO::Handle;
@@ -28,6 +29,7 @@ our @OPTIONS = (
     ['manual|man', 'print perldoc and exit'],
     ['email|e=s',  'send as an email to the given address'],
     ['all-hosts',  'show even systems we normally skip via regex'],
+    ['yaml',       'export results to yaml for other programs to use']
 );
 
 my $PUPPETDB_RESOURCES = 'http://sulpuppet-db.stanford.edu:8080/v3/resources';
@@ -231,6 +233,100 @@ sub skip_host {
 }
 
 #############################################################################
+# Report generation
+#############################################################################
+
+# Generate our results as a yaml report so that other programs can get this
+# information.
+sub yaml_report {
+    my ($options) = @_;
+
+    my %hosts;
+    my %vms = find_all_vms;
+    for my $host (keys %vms) {
+        $hosts{$host}{'vmware'} = $vms{$host};
+    }
+    for my $host (find_all_netdb) {
+        $hosts{$host}{'netdb'} = 1;
+    }
+    for my $host (find_all_cobbler) {
+        $hosts{$host}{'cobbler'} = 1;
+    }
+    for my $host (puppetdb_hosts) {
+        $hosts{$host}{'puppetdb'} = 1;
+    }
+    for my $host (check_dns(keys %hosts)) {
+        $hosts{$host}{'alive'} = 1;
+    }
+
+    # Clean up any blacklisted hosts.  Easier to do this after the fact than
+    # do this in every host check.
+    unless ($options->all_hosts) {
+        for my $host (keys %hosts) {
+            delete $hosts{$host}
+                if skip_host($host) || $vms{$host}{'template'} eq 'True';
+        }
+    }
+
+    print Dump(\%hosts);
+}
+
+# Generate the results as a human-readable report, either to stdout or as an
+# email.
+sub human_report {
+    my ($options) = @_;
+
+    my %hiera    = find_hiera_status();
+    my %vmware   = find_all_vms();
+    my %netdb    = map { $_ => 1 } find_all_netdb();
+    my %cobbler  = map { $_ => 1 } find_all_cobbler();
+    my %puppet   = map { $_ => 1 } puppetdb_hosts();
+    my %splunk   = map { $_ => 1 } puppetdb_query('Class', 'Splunk');
+    my %diamond  = map { $_ => 1 } puppetdb_query('Class', 'Diamond');
+
+    my %hosts = (%netdb, %puppet, %vmware, %cobbler);
+    my %alive    = map { $_ => 1 } check_dns(keys %hosts);
+
+    my $output;
+    $output .= sprintf("%-40s %-8s %-6s %-8s %-8s %-8s\n", 'Host', 'Sources',
+                       'Status', 'Splunk', 'Diamond', 'Hiera');
+    for my $host (sort keys %hosts) {
+        next if !$options->all_hosts && skip_host($host);
+        next if !$options->all_hosts && exists $vmware{$host}
+            && $vmware{$host}{'template'} eq 'True';
+
+        my $splunk  = exists $splunk{$host}  ? 'Yes'                    : 'No';
+        my $diamond = exists $diamond{$host} ? 'Yes'                    : 'No';
+        my $hiera   = exists $hiera{$host}   ? $hiera{$host}            : '-';
+        my $status  = exists $vmware{$host}  ? $vmware{$host}{'status'} : '-';
+
+        my @sources = (' ', ' ', ' ', ' ');
+        $sources[0] = 'P' if exists $puppet{$host};
+        $sources[1] = 'N' if exists $netdb{$host};
+        $sources[2] = 'V' if exists $vmware{$host};
+        $sources[3] = 'C' if exists $cobbler{$host};
+        my $sources = join(' ', @sources);
+
+        # Splunk doesn't need to be on non-prod boxes.
+        if ($host =~ m{-(dev|stage)(-\w|\d)?$} || $host =~ m{^dlss-dev-}) {
+            $splunk = 'N/A' if $splunk eq 'No';
+        }
+
+        $output .= sprintf("%-40s %-8s %-6s %-8s %-8s %-8s\n", $host, $sources,
+                           $status, $splunk, $diamond, $hiera);
+    }
+
+    $output .= "\n";
+    $output .= "Sources: P = Puppet, N = NetDB, V = VMWare, C = Cobbler\n";
+
+    if ($options->email) {
+        mail_report($options->email, $output);
+    } else {
+        print $output;
+    }
+}
+
+#############################################################################
 # Main routine
 #############################################################################
 
@@ -251,56 +347,10 @@ if ($options->manual) {
     exit 0;
 }
 
-# TODO: Use vmware to tell whether or not a server is a template and skip
-#       if so.
-
-my %hiera    = find_hiera_status();
-my %vmware   = find_all_vms();
-my %netdb    = map { $_ => 1 } find_all_netdb();
-my %cobbler  = map { $_ => 1 } find_all_cobbler();
-my %puppet   = map { $_ => 1 } puppetdb_hosts();
-my %splunk   = map { $_ => 1 } puppetdb_query('Class', 'Splunk');
-my %diamond  = map { $_ => 1 } puppetdb_query('Class', 'Diamond');
-
-my %hosts = (%netdb, %puppet, %vmware, %cobbler);
-my %alive    = map { $_ => 1 } check_dns(keys %hosts);
-
-my $output;
-$output .= sprintf("%-40s %-8s %-6s %-8s %-8s %-8s\n", 'Host', 'Sources',
-                   'Status', 'Splunk', 'Diamond', 'Hiera');
-for my $host (sort keys %hosts) {
-    next if !$options->all_hosts && skip_host($host);
-    next if !$options->all_hosts && exists $vmware{$host}
-        && $vmware{$host}{'template'} eq 'True';
-
-    my $splunk  = exists $splunk{$host}  ? 'Yes'                    : 'No';
-    my $diamond = exists $diamond{$host} ? 'Yes'                    : 'No';
-    my $hiera   = exists $hiera{$host}   ? $hiera{$host}            : '-';
-    my $status  = exists $vmware{$host}  ? $vmware{$host}{'status'} : '-';
-
-    my @sources = (' ', ' ', ' ', ' ');
-    $sources[0] = 'P' if exists $puppet{$host};
-    $sources[1] = 'N' if exists $netdb{$host};
-    $sources[2] = 'V' if exists $vmware{$host};
-    $sources[3] = 'C' if exists $cobbler{$host};
-    my $sources = join(' ', @sources);
-
-    # Splunk doesn't need to be on non-prod boxes.
-    if ($host =~ m{-(dev|stage)(-\w|\d)?$} || $host =~ m{^dlss-dev-}) {
-        $splunk = 'N/A' if $splunk eq 'No';
-    }
-
-    $output .= sprintf("%-40s %-8s %-6s %-8s %-8s %-8s\n", $host, $sources,
-                       $status, $splunk, $diamond, $hiera);
-}
-
-$output .= "\n";
-$output .= "Sources: P = Puppet, N = NetDB, V = VMWare, C = Cobbler\n";
-
-if ($options->email) {
-    mail_report($options->email, $output);
+if ($options->yaml) {
+    yaml_report($options);
 } else {
-    print $output;
+    human_report($options);
 }
 
 exit 0;
@@ -313,7 +363,7 @@ __END__
 
 =head1 NAME
 
-server-status - Get a list of all VMs and their status against a few metrics
+server-status - Report on all of our servers from various sources of truth
 
 =head1 SYNOPSIS
 
@@ -321,8 +371,18 @@ B<server-status> [B<-h>] [B<--manual>]
 
 =head1 DESCRIPTION
 
-B<server-status> currently is a fairly simple script that queries both VMware
-and the puppetdb API to find all
+B<server-status> checks our various sources of system information (puppet,
+vmware, netdb, cobbler) and builds a report based on those facts.  It has
+options to either make a human-readable report with some additional
+information, or to print out just that information as a yaml file.  The yaml
+file doesn't contain as much information, as it's meant to be parsed by
+something that will do further data massaging itself, and so we only want the
+base server data in that case.
+
+The reports normally bury some information around servers that are blacklisted
+by regex, or are templates in vmware.  This is to keep the normal reports more
+manageable, while leaving the ability to do a full report less regularly to
+do a complete vetting of our server statuses.
 
 =head1 OPTIONS
 
@@ -335,6 +395,19 @@ Prints a short command summary for the script.
 =item B<--manual>, B<--man>
 
 Prints the perldoc information (this document) for the script.
+
+=item B<--yaml>
+
+Prints the report as a yaml string.
+
+=item B<--email=<address>>
+
+Send the human-readable report to an email address.  Normally called by cron.
+
+=item B<--all-hosts>
+
+Report on the hosts we normally blacklist for being in a regex list, or for
+being vmware templates.
 
 =back
 
