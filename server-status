@@ -128,13 +128,12 @@ sub find_hiera_status {
 sub find_all_netdb {
     my $output = `remctl sulcobbler netdb list`;
 
-    my @servers = ();
-    for my $hostname (split(m{[\r\n]+}, $output)) {
-        chomp $hostname;
-        push(@servers, $hostname);
-    }
+    # Massage the output to indent all array lines.  Ruby doesn't care and
+    # sends things that way, but Perl's Ruby parser barfs out on.
+    $output =~ s{^- }{  - }gm;
 
-    return sort(@servers);
+    my ($servers_ref) = Load($output);
+    return %{ $servers_ref };
 }
 
 # Find all servers that are set up in cobbler on sulcobbler.
@@ -236,38 +235,77 @@ sub skip_host {
 # Report generation
 #############################################################################
 
-# Generate our results as a yaml report so that other programs can get this
-# information.
-sub yaml_report {
+# Given a hostname and our hash of aliases, return the canonical name for that
+# host.  If the host is an alias, return the hostname it's an alias for,
+# otherwise return the given hostname.
+sub map_host_alias {
+    my ($hostname, %aliases) = @_;
+    if (exists $aliases{$hostname}) {
+        return $aliases{$hostname};
+    } else {
+        return $hostname;
+    }
+}
+
+# Find all of our strictly host-based information by going through each host
+# data source and loading them into one data structure.
+sub find_hosts {
     my ($options) = @_;
 
     my %hosts;
     my %vms = find_all_vms;
-    for my $host (keys %vms) {
-        $hosts{$host}{'vmware'} = $vms{$host};
+    my %netdb = find_all_netdb;
+
+    # Load netdb first so that we can build a mapping of host aliases to
+    # canonical server names.  Some servers use a netdb alias as the name
+    # in puppet or cobbler, so we want to bring those all back.
+    my %aliases;
+    for my $host (keys %netdb) {
+        $hosts{$host}{'netdb'} = $netdb{$host};
+        for my $alias (@{ $netdb{$host} }) {
+            $aliases{$alias} = $host;
+        }
     }
-    for my $host (find_all_netdb) {
-        $hosts{$host}{'netdb'} = 1;
+
+    # Now look up our other data sources.
+    for my $host (keys %vms) {
+        my $canonical = map_host_alias($host, %aliases);
+        $hosts{$canonical}{'vmware'} = $vms{$host};
     }
     for my $host (find_all_cobbler) {
-        $hosts{$host}{'cobbler'} = 1;
+        my $canonical = map_host_alias($host, %aliases);
+        $hosts{$canonical}{'cobbler'} = 1;
     }
     for my $host (puppetdb_hosts) {
-        $hosts{$host}{'puppetdb'} = 1;
+        my $canonical = map_host_alias($host, %aliases);
+        $hosts{$canonical}{'puppetdb'} = 1;
     }
     for my $host (check_dns(keys %hosts)) {
-        $hosts{$host}{'alive'} = 1;
+        my $canonical = map_host_alias($host, %aliases);
+        $hosts{$canonical}{'alive'} = 1;
     }
 
     # Clean up any blacklisted hosts.  Easier to do this after the fact than
     # do this in every host check.
     unless ($options->all_hosts) {
         for my $host (keys %hosts) {
-            delete $hosts{$host}
-                if skip_host($host) || $vms{$host}{'template'} eq 'True';
+            if (skip_host($host) ||
+                (exists $vms{$host} && $vms{$host}{'template'} eq 'True')) {
+
+                delete $hosts{$host}
+            }
         }
     }
 
+    return %hosts;
+}
+
+# Generate our results as a yaml report so that other programs can get this
+# information.
+sub yaml_report {
+    my ($options) = @_;
+
+    my %hosts = find_hosts($options);
     print Dump(\%hosts);
 }
 
@@ -276,35 +314,28 @@ sub yaml_report {
 sub human_report {
     my ($options) = @_;
 
+    my %hosts = find_hosts($options);
+
     my %hiera    = find_hiera_status();
-    my %vmware   = find_all_vms();
-    my %netdb    = map { $_ => 1 } find_all_netdb();
-    my %cobbler  = map { $_ => 1 } find_all_cobbler();
-    my %puppet   = map { $_ => 1 } puppetdb_hosts();
     my %splunk   = map { $_ => 1 } puppetdb_query('Class', 'Splunk');
     my %diamond  = map { $_ => 1 } puppetdb_query('Class', 'Diamond');
-
-    my %hosts = (%netdb, %puppet, %vmware, %cobbler);
-    my %alive    = map { $_ => 1 } check_dns(keys %hosts);
 
     my $output;
     $output .= sprintf("%-40s %-8s %-6s %-8s %-8s %-8s\n", 'Host', 'Sources',
                        'Status', 'Splunk', 'Diamond', 'Hiera');
     for my $host (sort keys %hosts) {
-        next if !$options->all_hosts && skip_host($host);
-        next if !$options->all_hosts && exists $vmware{$host}
-            && $vmware{$host}{'template'} eq 'True';
-
         my $splunk  = exists $splunk{$host}  ? 'Yes'                    : 'No';
         my $diamond = exists $diamond{$host} ? 'Yes'                    : 'No';
         my $hiera   = exists $hiera{$host}   ? $hiera{$host}            : '-';
-        my $status  = exists $vmware{$host}  ? $vmware{$host}{'status'} : '-';
+
+        my $status  = exists $hosts{$host}{'vmware'}
+            ? $hosts{$host}{'vmware'}{'status'} : '-';
 
         my @sources = (' ', ' ', ' ', ' ');
-        $sources[0] = 'P' if exists $puppet{$host};
-        $sources[1] = 'N' if exists $netdb{$host};
-        $sources[2] = 'V' if exists $vmware{$host};
-        $sources[3] = 'C' if exists $cobbler{$host};
+        $sources[0] = 'P' if exists $hosts{$host}{'puppetdb'};
+        $sources[1] = 'N' if exists $hosts{$host}{'netdb'};
+        $sources[2] = 'V' if exists $hosts{$host}{'vmware'};
+        $sources[3] = 'C' if exists $hosts{$host}{'cobbler'};
         my $sources = join(' ', @sources);
 
         # Splunk doesn't need to be on non-prod boxes.
