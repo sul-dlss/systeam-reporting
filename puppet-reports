@@ -22,12 +22,14 @@ use IO::Select;
 use IPC::Open3;
 use JSON;
 use LWP::UserAgent;
+use YAML;
 
 # Our option descriptions, for both defining options and their usage.
 our @OPTIONS = (
     ['help|h',     'print usage (this text) and exit'],
     ['manual|man', 'print perldoc and exit'],
     ['email|e=s',  'send as an email to the given address'],
+    ['yaml',       'print report as yaml file']
 );
 
 my $ROOTDIR        = '/opt/app/reports/cms-puppetdb-tools/usr/sbin/';
@@ -41,6 +43,11 @@ my $FACT_URL = 'http://sulpuppet-db.stanford.edu:8080/v3/facts';
 my $PUPPETDB_RESOURCES = 'http://sulpuppet-db.stanford.edu:8080/v3/resources';
 my $PUPPETDB_QUERY_FMT = 'query=["and", ["=", "type", "%s"], ["=", "title", "%s"]]';
 my $PUPPETDB_NODES     = 'http://sulpuppet-db.stanford.edu:8080/v3/nodes';
+
+my @PUPPETDB_CHECKS = ([ 'Class', 'Splunk' ],
+                       [ 'Class', 'Diamond' ],
+                       [ 'Class', 'Mcollective' ],
+);
 
 #############################################################################
 # Misc routines
@@ -274,6 +281,121 @@ sub puppetdb_query {
 }
 
 #############################################################################
+# Output
+#############################################################################
+
+# Do a text report for administrators.
+sub report {
+    my ($options) = @_;
+
+    my ($retval, $tangled, $too_quiet, $failed, $facts, $output);
+    ($retval, $tangled) = system_output($REPORT_TANGLED);
+    if ($retval != 0) {
+        warn "Running the tangled report had errors: $tangled\n";
+    }
+    $output .= "Tangled servers (puppet keeps trying to do the same thing)\n";
+    $output .= "==========================================================\n";
+    $output .= clean_tangled($tangled);
+    $output .= "\n\n";
+
+    ($retval, $too_quiet) = system_output($REPORT_QUIET);
+    if ($retval != 0) {
+        warn "Running the too quiet report had errors: $too_quiet\n";
+    }
+    $output .= "Servers that have not checked in lately\n";
+    $output .= "=======================================\n";
+    $output .= clean_tooquiet($too_quiet);
+    $output .= "\n\n";
+
+    ($retval, $failed) = system_output($REPORT_FAILED);
+    if ($retval != 0) {
+        warn "Running the failed report had errors: $failed\n";
+    }
+    $output .= "Servers whose last run failed\n";
+    $output .= "=============================\n";
+    $output .= clean_failed($failed);
+    $output .= "\n\n";
+
+    $output .= "Servers in the wrong environment\n";
+    $output .= "================================\n";
+    $output .= environment_report();
+    $output .= "\n\n";
+
+    # Reports on servers that don't have various facts.
+    my %puppet   = map { $_ => 1 } puppetdb_hosts();
+    my %splunk   = map { $_ => 1 } puppetdb_query('Class', 'Splunk');
+    my %diamond  = map { $_ => 1 } puppetdb_query('Class', 'Diamond');
+    my %mco      = map { $_ => 1 } puppetdb_query('Class', 'Mcollective');
+    $output .= "Servers not using MCollective\n";
+    $output .= "=============================\n";
+    for my $host (sort keys %puppet) {
+        next if exists $mco{$host};
+        $output .= $host . "\n";
+    }
+    $output .= "\n\n";
+
+    if ($options->email) {
+        mail_report($options->email, $output);
+    } else {
+        print $output;
+    }
+}
+
+# Print out a yaml report meant for pulling together for other data sources.
+sub yaml {
+    my ($options) = @_;
+
+    my %servers;
+    my ($retval, $tangled, $too_quiet, $failed);
+    ($retval, $tangled) = system_output($REPORT_TANGLED);
+    if ($retval != 0) {
+        warn "Running the tangled report had errors: $tangled\n";
+    }
+    $tangled = clean_tangled($tangled);
+    for my $server (split(m{[\r\n]+}, $tangled)) {
+        $servers{$server}{'tangled'} = 1;
+    }
+
+    ($retval, $too_quiet) = system_output($REPORT_QUIET);
+    if ($retval != 0) {
+        warn "Running the too quiet report had errors: $too_quiet\n";
+    }
+    $too_quiet = clean_tooquiet($too_quiet);
+    for my $line (split(m{[\r\n]+}, $too_quiet)) {
+        my ($server, $date) = split(m{\s+}, $line, 2);
+        $date =~ s{\s+$}{};
+        $servers{$server}{'too_quiet'} = $date;
+    }
+
+    ($retval, $failed) = system_output($REPORT_FAILED);
+    if ($retval != 0) {
+        warn "Running the failed report had errors: $failed\n";
+    }
+    $failed = clean_failed($failed);
+    for my $server (split(m{[\r\n]+}, $failed)) {
+        $servers{$server}{'failed'} = 1;
+    }
+
+    my $bad_environment = environment_report();
+    for my $line (split(m{[\r\n]+}, $bad_environment)) {
+        my ($server, $env) = split(m{\s+}, $line);
+        $servers{$server}{'bad_environment'} = $env;
+    }
+
+    # Reports on servers that don't have various facts.
+    for my $check (@PUPPETDB_CHECKS) {
+        my ($type, $name) = @{ $check };
+        my $field = lc($type . '-' . $name);
+        for my $server (puppetdb_query($type, $name)) {
+            $server .= '.stanford.edu' unless $server =~ m{\.};
+            $servers{$server}{$field} = 1;
+        }
+    }
+
+    print Dump(\%servers);
+}
+
+#############################################################################
 # Main routine
 #############################################################################
 
@@ -294,57 +416,12 @@ if ($options->manual) {
     exit 0;
 }
 
-my ($retval, $tangled, $too_quiet, $failed, $facts, $output);
-($retval, $tangled) = system_output($REPORT_TANGLED);
-if ($retval != 0) {
-    warn "Running the tangled report had errors: $tangled\n";
-}
-$output .= "Tangled servers (puppet keeps trying to do the same thing)\n";
-$output .= "==========================================================\n";
-$output .= clean_tangled($tangled);
-$output .= "\n\n";
-
-($retval, $too_quiet) = system_output($REPORT_QUIET);
-if ($retval != 0) {
-    warn "Running the too quiet report had errors: $too_quiet\n";
-}
-$output .= "Servers that have not checked in lately\n";
-$output .= "=======================================\n";
-$output .= clean_tooquiet($too_quiet);
-$output .= "\n\n";
-
-($retval, $failed) = system_output($REPORT_FAILED);
-if ($retval != 0) {
-    warn "Running the failed report had errors: $failed\n";
-}
-$output .= "Servers whose last run failed\n";
-$output .= "=============================\n";
-$output .= clean_failed($failed);
-$output .= "\n\n";
-
-$output .= "Servers in the wrong environment\n";
-$output .= "================================\n";
-$output .= environment_report();
-$output .= "\n\n";
-
-# Reports on servers that don't have various facts.
-my %puppet   = map { $_ => 1 } puppetdb_hosts();
-my %splunk   = map { $_ => 1 } puppetdb_query('Class', 'Splunk');
-my %diamond  = map { $_ => 1 } puppetdb_query('Class', 'Diamond');
-my %mco      = map { $_ => 1 } puppetdb_query('Class', 'Mcollective');
-$output .= "Servers not using MCollective\n";
-$output .= "=============================\n";
-for my $host (sort keys %puppet) {
-    next if exists $mco{$host};
-    $output .= $host . "\n";
-}
-$output .= "\n\n";
-
-if ($options->email) {
-    mail_report($options->email, $output);
+if ($options->yaml) {
+    yaml($options);
 } else {
-    print $output;
+    report($options);
 }
+
 exit(0);
 __END__
 
