@@ -306,7 +306,13 @@ sub yaml_report {
     my ($options) = @_;
 
     my %hosts = find_hosts($options);
-    print Dump(\%hosts);
+    my %longhosts;
+    for my $key (keys %hosts) {
+        my $longkey = $key;
+        $longkey .= '.stanford.edu' unless $longkey =~ m{\.};
+        $longhosts{$longkey} = $hosts{$key};
+    }
+    print Dump(\%longhosts);
 }
 
 # Generate the results as a human-readable report, either to stdout or as an
