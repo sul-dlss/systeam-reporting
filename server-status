@@ -39,7 +39,8 @@ my $PUPPETDB_NODES     = 'http://sulpuppet-db.stanford.edu:8080/v3/nodes';
 # A list of regular expressions for hosts that we don't normally want to see
 # in our reports.  These should only be shown during quarterly reports for
 # doing a full check of all our host statuses.
-my @SKIP_HOSTS = ('^sulhp-\d+', '^SUL-', '^fh-c\d+', '^sul-cycl-');
+my @SKIP_HOSTS = ('^sulhp-\d+', '^SUL-');
+my @SKIP_MODELS = ('Cyclades', 'F5 Big-IP');
 
 #############################################################################
 # Email functions
@@ -128,8 +129,9 @@ sub find_hiera_status {
 sub find_all_netdb {
     my $output = `remctl sulcobbler netdb list`;
 
-    # Massage the output to indent all array lines.  Ruby doesn't care and
-    # sends things that way, but Perl's Ruby parser barfs out on.
+    # Massage the output to indent all array lines one step further.  Ruby
+    # sends one level less indented than Perl expects, which causes problems.
+    $output =~ s{^  - }{    - }gm;
     $output =~ s{^- }{  - }gm;
 
     my ($servers_ref) = Load($output);
@@ -224,10 +226,16 @@ sub puppetdb_query {
 # hosts we want to ignore.  This will let us normally skip things such as
 # our VMware servers, which we only want to see during quarterly reports.
 sub skip_host {
-    my ($host) = @_;
+    my ($host, %data) = @_;
     for my $match (@SKIP_HOSTS) {
         return 1 if $host =~ m{$match};
     }
+    for my $match (@SKIP_MODELS) {
+        next unless exists $data{$host}{'netdb'};
+        return 1 if $data{$host}{'netdb'}{'model'} =~ m{$match};
+    }
+    return 1 if exists $data{'vms'}{$host}
+        && $data{'vms'}{$host}{'template'} eq 'True';
     return 0;
 }
 
@@ -262,7 +270,7 @@ sub find_hosts {
     my %aliases;
     for my $host (keys %netdb) {
         $hosts{$host}{'netdb'} = $netdb{$host};
-        for my $alias (@{ $netdb{$host} }) {
+        for my $alias (@{ $netdb{$host}{'aliases'} }) {
             $aliases{$alias} = $host;
         }
     }
@@ -289,11 +297,7 @@ sub find_hosts {
     # do this in every host check.
     unless ($options->all_hosts) {
         for my $host (keys %hosts) {
-            if (skip_host($host) ||
-                (exists $vms{$host} && $vms{$host}{'template'} eq 'True')) {
-
-                delete $hosts{$host}
-            }
+            delete $hosts{$host} if skip_host($host, %hosts);
         }
     }
 
