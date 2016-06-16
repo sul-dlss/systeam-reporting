@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+#
+# Quick and simple version of a script to update the puppet upgrade schedule
+# file with any servers not yet in it.
+
+require 'puppetdb'
+require 'yaml'
+
+# Default settings.
+@client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
+schedule_fname = 'modules/profile/files/reports/etc/server-reports/schedule'
+
+# Get all hostnames.
+hosts = []
+response = @client.request('facts', ['=', 'name', 'hostname'])
+response.data.each do |r|
+  hostname = r['certname']
+  hosts << hostname
+end
+
+# Load the existing schedule file into an array of every scheduled host.
+scheduled = []
+File.open(schedule_fname, 'r') do |f|
+  f.each_line do |line|
+    m = /^(\d+)\s+(\S+)/.match(line)
+    next if m.nil?
+    scheduled << m[2]
+  end
+end
+
+hosts.sort.each do |hostname|
+  puts "99 #{hostname}" unless scheduled.include?(hostname)
+end
