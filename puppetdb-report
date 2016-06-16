@@ -1,4 +1,4 @@
-#!/usr/bin/ruby
+#!/usr/bin/env ruby
 #
 # Generate a yaml report on various puppet problems, such as servers that
 # haven't checked in, servers that failed a run, and servers that keep trying
