@@ -1,0 +1,215 @@
+#!/usr/bin/ruby
+#
+# Generate a yaml report on various puppet problems, such as servers that
+# haven't checked in, servers that failed a run, and servers that keep trying
+# to do the same thing over and over.
+
+require 'json'
+require 'puppetdb'
+require 'yaml'
+require 'active_support/all'
+
+# Default settings.
+CHECKIN_TIMEOUT = 24
+TANGLED_HOURS = 4
+REQUIRED_CLASSES = %w(Splunk Diamond Mcollective).freeze
+
+@client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
+
+#############################################################################
+# Common functions
+#############################################################################
+
+# Given a node and a time field in that node hash, convert into a time object.
+# Return nil if the field is missing or nil.
+def node_time(node, field)
+  return nil unless node.key?(field)
+  return nil if node[field].nil?
+
+  timestamp = ActiveSupport::TimeZone.new('UTC').parse(node[field])
+  timestamp
+end
+
+# Given the name of a class, return all hosts that use that class.
+def servers_with_class(classname)
+  hosts = []
+  query = ['and', ['=', 'type', 'Class'], ['=', 'title', classname]]
+  response = @client.request('resources', query)
+  response.data.each do |r|
+    hostname = r['certname']
+    hosts << hostname
+  end
+
+  hosts
+end
+
+def fact_value(fact_name)
+  facts = {}
+  response = @client.request('facts', ['=', 'name', fact_name])
+  response.data.each do |r|
+    hostname = r['certname']
+    facts[hostname] = r['value']
+  end
+
+  facts
+end
+
+#############################################################################
+# Tangled report
+#############################################################################
+
+def recent_nodes
+  hosts = []
+  start_time = Time.now.utc - TANGLED_HOURS.hours
+  end_time = Time.now.utc
+
+  host_query = ['~', 'certname', '^.*$']
+  time_query_start = ['>', 'timestamp', start_time.iso8601]
+  time_query_stop = ['<', 'timestamp', end_time.iso8601]
+  query = ['and', host_query, time_query_start, time_query_stop] \
+
+  payload = {}
+  payload['summarize-by'] = 'certname'
+  payload['count-by'] = 'certname'
+  payload['counts-filter'] = ['>', 'successes', 0].to_json
+
+  response = @client.request('event-counts', query, payload)
+  response.data.each do |r|
+    hosts << r['subject']['title']
+  end
+
+  hosts
+end
+
+def tangled?(hostname)
+  start_time = Time.now.utc - TANGLED_HOURS.hours
+  end_time = Time.now.utc
+
+  host_query = ['=', 'certname', hostname]
+  time_query_start = ['>', 'timestamp', start_time.iso8601]
+  time_query_stop = ['<', 'timestamp', end_time.iso8601]
+  query = ['and', host_query, time_query_start, time_query_stop]
+
+  events = []
+  response = @client.request('events', query)
+  response.data.each do |r|
+    next if r['status'] == 'skipped'
+    next if r['status'] == 'noop'
+    summary = change_summary(r)
+    return true if events.include?(summary)
+
+    events << summary
+  end
+end
+
+# Create a summary string about an event, so that we can compare it to other
+# events from a server and see if it's trying to do the same thing multiple
+# times.
+def change_summary(event)
+  new_setting = event['new-value']
+  old_setting = event['old-value']
+  title = event['resource-title']
+  type  = event['resource-type']
+  status = event['status']
+
+  string = format('%s[%s]: %s -> %s (%s)', type, title, old_setting,
+                  new_setting, status)
+  string
+end
+
+#############################################################################
+# Failed report
+#############################################################################
+
+def failed_data
+  failed = []
+
+  host_query = ['~', 'certname', '^.*$']
+  time_query = ['=', 'latest_report?', 'true']
+  query = ['and', host_query, time_query]
+
+  payload = {}
+  payload['summarize-by'] = 'certname'
+  payload['count-by'] = 'certname'
+  payload['counts-filter'] = ['>', 'failures', 0].to_json
+
+  response = @client.request('event-counts', query, payload)
+  response.data.each do |r|
+    failed << r['subject']['title']
+  end
+
+  failed
+end
+
+#############################################################################
+# Too quiet report
+#############################################################################
+
+# Do a query for all nodes and the basic node data (checkins, failures, etc).
+def node_data
+  hosts = {}
+  response = @client.request('nodes', ['~', ['fact', 'fqdn'], '^.*$'])
+  response.data.each do |r|
+    hostname = r['name']
+    hosts[hostname] = r
+  end
+
+  hosts
+end
+
+# Given a hostname and a number of hours, return true or false as to whether it
+# has checked in in that time.
+def node_too_old?(node, hours)
+  checkin = node_time(node, 'report_timestamp')
+  return true if checkin.nil?
+
+  threshold = Time.now.utc
+  threshold -= hours.hours
+
+  return true if checkin < threshold
+  false
+end
+
+def node_checkin(node)
+  checkin = node_time(node, 'report_timestamp')
+  checkin_str = if checkin.nil?
+                  'never'
+                else
+                  checkin.strftime('%Y-%m-%d %H:%M:%S %Z')
+                end
+
+  checkin_str
+end
+
+#############################################################################
+# Main routine
+#############################################################################
+
+report = {}
+
+hosts = node_data
+hosts.keys.sort.each do |hostname|
+  report[hostname] = {}
+  next unless node_too_old?(hosts[hostname], CHECKIN_TIMEOUT)
+  report[hostname]['too_quiet'] = node_checkin(hosts[hostname])
+end
+
+failed = failed_data
+failed.sort.each do |hostname|
+  report[hostname]['failed'] = 1
+end
+
+recent = recent_nodes
+recent.sort.each do |hostname|
+  report[hostname]['tangled'] = 1 if tangled?(hostname)
+end
+
+REQUIRED_CLASSES.each do |classname|
+  servers_using = servers_with_class(classname)
+  servers_using.each do |hostname|
+    keyname = 'class-' + classname.downcase
+    report[hostname][keyname] = 1
+  end
+end
+
+puts report.to_yaml
