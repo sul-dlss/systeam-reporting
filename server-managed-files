@@ -1,0 +1,30 @@
+#!/usr/bin/ruby
+
+# This is a simple mcollective client to call our package reporting agent and
+# save the output for each server into its own file.
+
+require 'mcollective'
+
+include MCollective::RPC
+
+# Create the dumps directory if it does not yet exist.
+servers_dir = '/var/cache/managed-files/'
+
+# Call the report in batches of 10, with 5s sleep between each batch.  Disable
+# the progress bar since this'll normally be run via cron.
+mc = rpcclient('managedfiles')
+mc.progress = false
+mc.batch_size = 10
+mc.batch_sleep_time = 5
+
+# For every server that sent a reply, write the response into the dumps dir.
+mc.yaml.each do |resp|
+  if resp[:statuscode] == 0
+    filename = servers_dir + resp[:sender] + '.yaml'
+    File.open(filename, 'w') { |file| file.write(resp[:data][:report]) }
+  else
+    puts "Failed to run on " + resp[:sender] + ": " + resp[:statusmsg]
+  end
+end
+
+mc.disconnect
