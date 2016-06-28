@@ -229,7 +229,7 @@ sub puppetdb_query {
 sub skip_host {
     my ($host, %data) = @_;
     for my $match (@SKIP_HOSTS) {
-        return 1 if $host =~ m{$match}i;
+        return 1 if $host =~ m{$match};
     }
     for my $match (@SKIP_MODELS) {
         next unless exists $data{$host}{'netdb'};
