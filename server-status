@@ -41,6 +41,7 @@ my $PUPPETDB_NODES     = 'http://sulpuppet-db.stanford.edu:8080/v3/nodes';
 # doing a full check of all our host statuses.
 my @SKIP_HOSTS = ('^sulhp-\d+', '^SUL-');
 my @SKIP_MODELS = ('Cyclades', 'F5 Big-IP', 'NetApp', 'tape library', 'Cisco');
+my @SKIP_OS     = ('Windows')
 
 #############################################################################
 # Email functions
@@ -228,11 +229,15 @@ sub puppetdb_query {
 sub skip_host {
     my ($host, %data) = @_;
     for my $match (@SKIP_HOSTS) {
-        return 1 if $host =~ m{$match};
+        return 1 if $host =~ m{$match}i;
     }
     for my $match (@SKIP_MODELS) {
         next unless exists $data{$host}{'netdb'};
-        return 1 if $data{$host}{'netdb'}{'model'} =~ m{$match};
+        return 1 if $data{$host}{'netdb'}{'model'} =~ m{$match}i;
+    }
+    for my $match (@SKIP_OS) {
+        next unless exists $data{$host}{'netdb'};
+        return 1 if $data{$host}{'netdb'}{'os'} =~ m{$match}i;
     }
     return 1 if exists $data{'vms'}{$host}
         && $data{'vms'}{$host}{'template'} eq 'True';
