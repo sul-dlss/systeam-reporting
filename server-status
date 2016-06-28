@@ -40,7 +40,7 @@ my $PUPPETDB_NODES     = 'http://sulpuppet-db.stanford.edu:8080/v3/nodes';
 # in our reports.  These should only be shown during quarterly reports for
 # doing a full check of all our host statuses.
 my @SKIP_HOSTS = ('^sulhp-\d+', '^SUL-');
-my @SKIP_MODELS = ('Cyclades', 'F5 Big-IP');
+my @SKIP_MODELS = ('Cyclades', 'F5 Big-IP', 'NetApp', 'tape library', 'Cisco');
 
 #############################################################################
 # Email functions
