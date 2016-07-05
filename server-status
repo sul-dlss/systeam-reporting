@@ -104,6 +104,7 @@ sub find_all_vms {
     my %servers = ();
     for my $line (split(m{[\r\n]+}, $output)) {
         next if $line =~ m{^Name };
+        next if $line =~ m{^NetApp AltaVault};
 
         my ($host, $status, $template, $cpus, $mem) = split(m{\s+}, $line);
         $status =~ s{powered}{};
