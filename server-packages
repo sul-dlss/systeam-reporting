@@ -17,8 +17,9 @@ servers_dir = '/var/lib/package-reports/'
 # the progress bar since this'll normally be run via cron.
 mc = rpcclient('packagereport')
 mc.progress = false
-mc.batch_size = 10
+mc.batch_size = 20
 mc.batch_sleep_time = 5
+mc.discovery_timeout = 10
 
 # For every server that sent a reply, write the response into the dumps dir.
 mc.yaml().each do |resp|
