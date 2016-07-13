@@ -172,6 +172,7 @@ end
 
 def node_checkin(node)
   checkin = node_time(node, 'report_timestamp')
+  checkin = node_time(node, 'facts_timestamp') if checkin.nil?
   checkin_str = if checkin.nil?
                   'never'
                 else
