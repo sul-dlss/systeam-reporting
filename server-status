@@ -240,9 +240,10 @@ sub skip_host {
         next unless exists $data{$host}{'netdb'};
         return 1 if $data{$host}{'netdb'}{'os'} =~ m{$match}i;
     }
+
     return 1 if exists $data{$host}{'netdb'}
-        && defined $data{$host}{'netdb'}{'status'}
-        && $data{$host}{'netdb'}{'status'} eq 'Stale';
+        && defined $data{$host}{'netdb'}{'state'}
+        && $data{$host}{'netdb'}{'state'} eq 'Stale';
     return 1 if exists $data{'vms'}{$host}
         && $data{'vms'}{$host}{'template'} eq 'True';
     return 0;
