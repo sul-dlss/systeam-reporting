@@ -1,0 +1,30 @@
+#!/usr/bin/ruby
+
+# This is a basic mcollective wrapper that calls the logfiles rpc command and
+# combines the output from each server into a report.
+
+require 'mcollective'
+require 'yaml'
+
+include MCollective::RPC
+
+# Make the rpc call and set options.
+mc = rpcclient('logfiles')
+mc.progress = true
+mc.batch_size = 20
+mc.batch_sleep_time = 5
+mc.discovery_timeout = 10
+
+# Get the replies from all servers and combine into a report.
+servers = {}
+mc.yaml.each do |resp|
+  if resp[:statuscode] == 0
+    hostname = resp[:sender]
+    servers[hostname] = YAML.load(resp[:data][:report])
+  else
+    puts "Failed to run on " + resp[:sender] + ": " + resp[:statusmsg]
+  end
+end
+
+mc.disconnect
+puts servers.to_yaml
