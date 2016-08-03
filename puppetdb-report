@@ -197,17 +197,20 @@ end
 
 failed = failed_data
 failed.sort.each do |hostname|
+  next unless report.key?(hostname)
   report[hostname]['failed'] = 1
 end
 
 recent = recent_nodes
 recent.sort.each do |hostname|
+  next unless report.key?(hostname)
   report[hostname]['tangled'] = 1 if tangled?(hostname)
 end
 
 REQUIRED_CLASSES.each do |classname|
   servers_using = servers_with_class(classname)
   servers_using.each do |hostname|
+    next unless report.key?(hostname)
     keyname = 'class-' + classname.downcase
     report[hostname][keyname] = 1
   end
