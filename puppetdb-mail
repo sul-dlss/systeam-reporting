@@ -1,0 +1,48 @@
+#!/usr/bin/env ruby
+#
+# Use the already created puppet node state yaml file to send out a mailing
+# about each server failed, quiet, or tangled.
+
+require 'net/smtp'
+require 'yaml'
+
+EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
+
+#############################################################################
+# Main routine
+#############################################################################
+
+quiet = {}
+tangled = []
+failed = []
+report = YAML.load_file('/var/lib/systems-dashboard/puppetstate.yaml')
+report.keys.each do |server|
+  failed.push(server) if report[server].key?('failed')
+  tangled.push(server) if report[server].key?('tangled')
+
+  next unless report[server].key?('too_quiet')
+  quiet[server] = report[server]['too_quiet']
+end
+
+message = ''
+message << "From: Do Not Reply <nobody@stanford.edu>\n"
+message << "To: #{EMAIL_TO}\n"
+message << "Subject: Puppet servers currently having problems\n"
+message << "\n"
+
+message << "Servers with failed puppet runs\n"
+message << "-------------------------------\n"
+failed.sort.each do |server|
+  message << server + "\n"
+end
+message << "\n"
+
+message << "Servers without any puppet runs for over 24 hours\n"
+message << "-------------------------------------------------\n"
+quiet.keys.sort.each do |server|
+  message << format("%-45s %s\n", server, quiet[server])
+end
+
+Net::SMTP.start('localhost') do |smtp|
+  smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
+end
