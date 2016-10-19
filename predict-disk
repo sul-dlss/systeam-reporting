@@ -1,0 +1,11 @@
+#!/usr/bin/env ruby
+#
+
+# Algorithm:
+# For each disk we need to calculate a historical percentage for disk growth.
+#   Any disks that we have below some amount of data for, we skip.  1 month?
+#   Ex: Total disk growth in the past three months
+# Also calculate the amount of disk used that would take us to 90%
+# Then apply log($alert_disk / $current_disk) / log (1 + $growth_percent)
+#   This will give the number of months of growth it will take to hit 90% disk.
+# Make a report on any disks where the months is less than some warning value.
