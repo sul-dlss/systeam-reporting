@@ -17,27 +17,32 @@ sysadmins  = [
     'ssklar',
 ]
 
+# Not just developers, but anyone in SUL.
 developers = [
+    'ahafele',
     'atz',
     'awinget',
-    'azaroth',
     'bess',
     'blalbrit',
     'cabeer',
+    'dclure',
     'dlweber',
+    'dlrueda',
     'drh',
     'geisler',
-    'jchris',
+    'jgreben',
     'jkeck',
     'laneymcg',
     'lmcrae',
+    'mahmed',
     'ndushay',
     'ntay',
     'petucket',
     'pjreed',
-    'rmetz',
+    'rlunnon',
     'suntzu',
     'tommyi',
+    'vtang',
 ]
 
 system = [
@@ -45,6 +50,7 @@ system = [
     'apt',
     'chron',
     'drupal',
+    'dor_indexer',
     'ezproxy',
     'hadoop',
     'nagiosuser',
@@ -62,6 +68,7 @@ system = [
     'sultsm99',
     'tftp',
     'tomcat',
+    'varnish',
 ]
 
 groups = [
@@ -89,10 +96,12 @@ groups = [
     'loris',
     'lyberadmin',
     'mathlm',
-    'ntirety',
+#    'ntirety',
+    'ossec',
     'parker',
     'purl',
     'releases',
+    'reporting',
     'requests',
     'reserves',
     'sandbox',
@@ -228,9 +237,15 @@ def main():
     for server in sorted(servers):
         found = 0
         developer = 0
+
+        # We have a number of system users named after the host. Split up the
+        # hostname so that we can see if the user is part of the system.
+        short_server = server.replace('.stanford.edu', '')
+        server_parts = server.split('-')
+
         for user in sorted(set(servers[server])):
             if (user not in sysadmins and user not in system
-                and user not in groups):
+                and user not in groups and user not in server_parts):
 
                 found = 1
                 if (user in developers):
