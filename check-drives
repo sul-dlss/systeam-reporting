@@ -1,0 +1,193 @@
+#!/usr/bin/ruby
+
+require 'rubygems'
+require 'date'
+require 'elasticsearch'
+require 'net/smtp'
+require 'time'
+
+# Alert when 90% of the disk will be full during the time period.
+ALERT_LEVEL = 0.9
+
+# Alert when the disk is projected to hit ALERT_LEVEL full within this number
+# of days.
+THRESHOLD_DAYS = 30
+
+# The number of days to go back for the first day to check from for our range.
+DAY_RANGE = 5
+
+# Send the report to the sysadmin reporting address.
+EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
+#EMAIL_TO = 'jonrober@stanford.edu'.freeze
+
+# Remove the proxy, as this actually isn't needed for sul-nagios and is just
+# confusing things.
+ENV['http_proxy']  = nil
+ENV['https_proxy'] = nil
+es_url = 'https://sul-elasticsearch-prod-a.stanford.edu:9200'
+
+#############################################################################
+# Time period calculations
+#############################################################################
+
+# Calculate the time it will take for a disk to grow into our alert level for
+# warning, assuming that the current growth rate continues.
+def overusage_linear(checkins)
+  return 0 unless checkins.keys.count >= 2
+
+  start_period = checkins.keys.sort.first
+  end_period   = checkins.keys.sort.last
+  current_disk = checkins[end_period][:used].to_f
+  start_disk   = checkins[start_period][:used].to_f
+
+  alert_space = ALERT_LEVEL * checkins[end_period][:size].to_f
+  return 0 if current_disk == 0 || start_disk == 0
+  return 0 if current_disk > alert_space
+
+  # Calculate the number of periods it will take to grow to our alert space.
+  # The periods will depend on the DAY_RANGE, since that will be the difference
+  # between the start and end date.  So to find the actual days, return that
+  # period times DAY_RANGE.
+  growth = current_disk - start_disk
+  remaining = alert_space - current_disk
+  period = remaining / growth
+  period * DAY_RANGE
+end
+
+# Calculate the time it will take for a disk to grow into our alert level for
+# warning, assuming that the current growth rate continues.  This uses an
+# alternate algorithm by growth rate, which I think is less correct for the
+# problem.  It's what I originally used though, so leaving the code here in
+# case I want to do more comparisons later.
+def overusage_by_growth_rate(checkins)
+  return 0 unless checkins.keys.count >= 2
+
+  start_period = checkins.keys.sort.first
+  end_period   = checkins.keys.sort.last
+  current_disk = checkins[end_period][:used].to_f
+  start_disk   = checkins[start_period][:used].to_f
+
+  alert_space = ALERT_LEVEL * checkins[end_period][:size].to_f
+  growth_rate = (current_disk - start_disk) / start_disk
+
+  return 0 if current_disk == 0 || start_disk == 0
+  return 0 if current_disk > alert_space
+
+  # Calculate the number of periods it will take to grow to our alert space.
+  # The periods will depend on the DAY_RANGE, since that will be the difference
+  # between the start and end date.  So to find the actual days, return that
+  # period times DAY_RANGE.
+  period = Math.log(alert_space / current_disk) / Math.log(1 + growth_rate)
+  period * DAY_RANGE
+end
+
+#############################################################################
+# Elasticsearch functions
+#############################################################################
+
+# Given an elasticsearch client and a hostname, find the drives for that host
+# on the current day plus the DAY_RANGE ago date.  The query is long but
+# simplifies to matching host and one of two dates.
+def disks_for_host (client, host)
+  today = Date.today
+  start = (today - DAY_RANGE)
+
+  query = { :query => {
+    :constant_score => {
+      :filter => {
+        :bool => {
+          :must => [
+            { :term => { :hostname => host } },
+            { :bool => {
+              :should => [
+                { :range => {
+                  :date => {
+                    :gte => "#{today.strftime('%Y-%m-%d')}T00:00:00-08:00",
+                    :lte => "#{today.strftime('%Y-%m-%d')}T23:59:59-08:00"
+                  } }
+                },
+                { :range => {
+                    :date => {
+                      :gte => "#{start.strftime('%Y-%m-%d')}T00:00:00-08:00",
+                      :lte => "#{start.strftime('%Y-%m-%d')}T23:59:59-08:00"
+                  } }
+                }
+              ]
+            } }
+          ]
+        }
+      }
+    }
+  } }
+  host_search = client.search(:index => 'drives', :body => query)
+
+  host_search
+end
+
+#############################################################################
+# Main routine
+#############################################################################
+
+client = Elasticsearch::Client.new :log => false, :url => es_url,
+  :transport_options => { :ssl => { :verify => false, } }
+
+# Query for a aggregation of all unique hostnames.
+query = {
+  :size => 0,
+  :aggs => {
+    :langs => {
+      :terms => {
+        :size  => 600,
+        :field => 'hostname'
+      }
+    }
+  }
+}
+search = client.search(:index => 'drives', :body => query)
+
+# Iterate through each host, searching for the drive checkins belonging to it.
+drives = {}
+search['aggregations']['langs']['buckets'].each do |bucket|
+  host = bucket['key']
+  drives[host] = {}
+
+  host_search = disks_for_host(client, host)
+  host_search['hits']['hits'].each do |hit|
+    drive = hit['_source']['drive']
+    used  = hit['_source']['current']
+    size  = hit['_source']['max']
+    time  = Time.parse(hit['_source']['date']).to_i
+
+    # Save the found drive / space combo for later parsing.
+    drives[host][drive] = {} unless drives[host].key?(drive)
+    drives[host][drive][time] = {}
+    checkin = { :used => used, :size => size }
+    drives[host][drive][time] = checkin
+  end
+end
+
+# Go through the drives found, calculate the days until we run low on space,
+# and warn for any that will be running low soon.
+message = ''
+drives.keys.sort.each do |host|
+  drives[host].keys.sort.each do |drive|
+    alerting = overusage_linear(drives[host][drive])
+    next if alerting <= 0
+    next if alerting >= THRESHOLD_DAYS
+    message << format("%s: %s will pass 90%% full in %0.1f days\n", host, drive, alerting)
+    message << "\n"
+  end
+end
+
+unless message == ''
+  header = ''
+  header << "From: Do Not Reply <nobody@stanford.edu>\n"
+  header << "To: #{EMAIL_TO}\n"
+  header << "Subject: Servers passing 90% disk usage in the next month\n"
+  header << "\n"
+
+  message << 'Alerting is based on growth over the last five days staying constant.'
+  Net::SMTP.start('localhost') do |smtp|
+    smtp.send_message header + message, 'nobody@stanford.edu', EMAIL_TO
+  end
+end
