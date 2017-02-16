@@ -3,10 +3,18 @@
 # Use the already created puppet node state yaml file to send out a mailing
 # about each server failed, quiet, or tangled.
 
+require 'github_create_issues'
 require 'net/smtp'
 require 'yaml'
 
 EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
+
+# Data for github issue creation.
+repo  = 'sul-dlss/operations-tasks'
+label = 'puppet-notreporting'
+token = File.open('/etc/github-issues/oauth-token', 'rb').read
+desc = 'Please check to make sure that puppet is running, enabled, and against a good branch.'
+asignee = 'jonrober'
 
 #############################################################################
 # Main routine
@@ -46,3 +54,10 @@ end
 Net::SMTP.start('localhost') do |smtp|
   smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
 end
+
+# Now create each of these as a github issue.
+issues = []
+quiet.keys.each do |server|
+  issues.push("#{server} has not run puppet in over 24 hours")
+end
+GithubCreateIssues.add_github_issues(token, repo, label, issues, desc, asignee)
