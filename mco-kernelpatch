@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+
+# This is a client used to perform kernel upgrades against a stack, outputting
+# the results in a more useful format than the bare mco client.
+
+require 'mcollective'
+require 'puppetdb'
+require 'yaml'
+
+include MCollective::RPC
+
+abort "give one or more stacks to act on" unless ARGV.count > 0
+
+# Get the servers to act on from given stack names.
+hostnames = []
+client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
+ARGV.each do |stack|
+  response = client.request('facts', ['and', ['=', 'name', 'stack'],
+                                      ['=', 'value', stack]])
+  hostnames << response.data.collect { |x| x['certname'] }
+end
+
+abort "no hosts found for the given stacks" unless hostnames.count > 0
+puts "Upgrading kernels on the following hosts:"
+hostnames.sort.each do |host|
+  puts "  #{host}"
+end
+
+# Make the rpc call and set options.
+mc = rpcclient('kernel')
+mc.discover(nodes: hostnames)
+mc.progress = true
+mc.batch_size = 20
+mc.batch_sleep_time = 10
+mc.discovery_timeout = 60
+
+# Upgrade each server, reporting on success or failure.
+mc.upgrade.each do |resp|
+  if resp[:statuscode].zero?
+    puts "SUCCESS: " + resp[:sender]
+  else
+    puts "FAILURE: " + resp[:sender] + " : " + resp[:statusmsg]
+  end
+end
+
+mc.disconnect
