@@ -5,8 +5,6 @@
 
 require 'puppetdb'
 
-include MCollective::RPC
-
 abort "give one or more stacks to act on" unless ARGV.count > 0
 
 # Get the servers to act on from given stack names.
