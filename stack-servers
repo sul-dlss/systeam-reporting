@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+
+# This is a simple puppetdb wrapper that prints all servers in a list of stacks
+# from the command line.
+
+require 'puppetdb'
+
+include MCollective::RPC
+
+abort "give one or more stacks to act on" unless ARGV.count > 0
+
+# Get the servers to act on from given stack names.
+hostnames = []
+client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
+ARGV.each do |stack|
+  response = client.request('facts', ['and', ['=', 'name', 'stack'],
+                                      ['=', 'value', stack]])
+  hostnames << response.data.collect { |x| x['certname'] }
+end
+
+abort "no hosts found for the given stacks" unless hostnames.count > 0
+hostnames.sort.each do |host|
+  puts host
+end
