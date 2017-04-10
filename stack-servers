@@ -18,5 +18,6 @@ end
 
 abort "no hosts found for the given stacks" unless hostnames.count > 0
 hostnames.sort.each do |host|
-  puts host
+  shorthost = host.sub(/\.stanford\.edu$/, '')
+  puts shorthost
 end
