@@ -1,0 +1,11 @@
+#!/bin/bash
+
+SNAPSHOT='prekernel'
+RVM='/usr/local/rvm/wrappers/ruby-2.2.2/ruby'
+STACK_LOOKUP='/opt/app/reports/systeam-reporting/stack-servers'
+
+/usr/local/bin/k5start -qUtf /etc/keytabs/service.sul-reports.keytab
+$RVM $STACK_LOOKUP $@ | while read hostname; do
+  remctl sulcobbler ezmomi removeSnapshot --vm $hostname --name $SNAPSHOT
+  remctl sulcobbler ezmomi createSnapshot --vm $hostname --name $SNAPSHOT
+done
