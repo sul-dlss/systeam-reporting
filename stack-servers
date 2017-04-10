@@ -17,7 +17,7 @@ ARGV.each do |stack|
 end
 
 abort "no hosts found for the given stacks" unless hostnames.count > 0
-hostnames.sort.each do |host|
+hostnames.flatten.sort.each do |host|
   shorthost = host.sub(/\.stanford\.edu$/, '')
   puts shorthost
 end
