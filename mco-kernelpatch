@@ -19,6 +19,7 @@ ARGV.each do |stack|
                                       ['=', 'value', stack]])
   hostnames << response.data.collect { |x| x['certname'] }
 end
+hostnames.flatten!
 
 abort "no hosts found for the given stacks" unless hostnames.count > 0
 puts "Upgrading kernels on the following hosts:"
@@ -33,6 +34,7 @@ mc.progress = true
 mc.batch_size = 20
 mc.batch_sleep_time = 10
 mc.discovery_timeout = 60
+mc.ttl = 3600
 
 # Upgrade each server, reporting on success or failure.
 mc.upgrade.each do |resp|
