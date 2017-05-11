@@ -1,0 +1,89 @@
+#!/usr/bin/env ruby
+
+# This is a client used to perform reboots against a stack, separating the
+# reboots into stages to avoid downtime.
+
+require 'mcollective'
+require 'net/ping'
+require 'puppetdb'
+
+include MCollective::RPC
+
+abort "give one or more stacks to act on" unless ARGV.count > 0
+
+# Verify that a list of hosts have restarted before returning.  This is used to
+# make sure that one stage of hosts are all back up before moving on to the
+# next.
+def wait_for_reboots(hostnames)
+  until hostnames.empty?
+    hostnames.sort.each do |host|
+      check = Net::Ping::External.new(host)
+      next unless check.ping?
+      puts "  .. #{host} is back up"
+      hostnames.delete(host)
+    end
+    unless hostnames.empty?
+      puts "Waiting before another ping set..."
+      sleep 30
+    end
+  end
+
+  puts "\n"
+end
+
+# Send a list of servers a reboot request via mcollective.
+def reboot_stage(hostnames)
+  mc = rpcclient('kernel')
+  mc.discover(nodes: hostnames)
+  mc.progress = true
+  mc.batch_size = 20
+  mc.batch_sleep_time = 10
+  mc.discovery_timeout = 60
+  mc.ttl = 120
+
+  # Upgrade each server, reporting on success or failure.
+  # TODO: This will not respond well with other than failure, since the
+  # server is rebooting.  Figure out something there.
+  mc.reboot.each do |resp|
+    if resp[:statuscode].zero?
+      puts "SUCCESS: " + resp[:sender]
+    else
+      puts "FAILURE: " + resp[:sender] + " : " + resp[:statusmsg]
+    end
+  end
+
+  mc.disconnect
+end
+
+# Get the servers to act on from given stack names.
+hosts = {}
+client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
+ARGV.each do |stack|
+  servers = client.request('nodes', ['=', ['fact', 'stack'], stack])
+  servers.data.each do |x|
+    host = x['name']
+    response = client.request('facts', ['and', ['=', 'certname', host],
+                                        ['=', 'name', 'reboot_stage']])
+    stage = if response.nil? || response.data.empty?
+              1
+            else
+              response.data[0]['value'].to_i
+            end
+
+    hosts[stage] = [] unless hosts.key?(stage)
+    hosts[stage] << host
+  end
+end
+
+abort "no hosts found for the given stacks" unless hosts.count > 0
+hosts.keys.sort.each do |stage|
+  puts "Stage #{stage}, rebooting hosts:"
+  hosts[stage].sort.each do |host|
+    puts "  #{host}"
+  end
+  puts "\n"
+
+  # reboot_stage(hosts[stage])
+  # sleep 60
+  wait_for_reboots(hosts[stage])
+end
