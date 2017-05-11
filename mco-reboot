@@ -83,7 +83,7 @@ hosts.keys.sort.each do |stage|
   end
   puts "\n"
 
-  # reboot_stage(hosts[stage])
-  # sleep 60
+  reboot_stage(hosts[stage])
+  sleep 60
   wait_for_reboots(hosts[stage])
 end
