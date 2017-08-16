@@ -5,7 +5,7 @@
 # to do the same thing over and over.
 
 require 'json'
-require 'puppetdb'
+require 'httparty'
 require 'yaml'
 require 'active_support/all'
 
@@ -14,7 +14,37 @@ CHECKIN_TIMEOUT = 24
 TANGLED_HOURS = 4
 REQUIRED_CLASSES = %w(Splunk Diamond Mcollective).freeze
 
-@client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
+@puppetdbs = {
+  'v3' => 'http://sulpuppet-db.stanford.edu:8080/v3',
+  'v4' => 'http://sulpuppet4-db.stanford.edu:8080/pdb/query/v4',
+}
+
+#############################################################################
+# PuppetDB functions
+#############################################################################
+
+def request(endpoint, query = nil, payload = {})
+  responses = []
+
+  @puppetdbs.each do |version, path|
+    options = { 'query' => query.to_json }
+    payload.each do |k, v|
+      if version == 'v3'
+        options[k.to_s.sub('_', '-')] = v
+      else
+        options[k.to_s] = v
+      end
+    end
+
+    response = HTTParty.get("#{path}/#{endpoint}", body: options)
+    tmp_rsp = JSON.parse response.body
+    tmp_rsp.each do |r|
+      responses.push(r)
+    end
+  end
+
+  responses
+end
 
 #############################################################################
 # Common functions
@@ -34,8 +64,8 @@ end
 def servers_with_class(classname)
   hosts = []
   query = ['and', ['=', 'type', 'Class'], ['=', 'title', classname]]
-  response = @client.request('resources', query)
-  response.data.each do |r|
+  response = request('resources', query)
+  response.each do |r|
     hostname = r['certname']
     hosts << hostname
   end
@@ -45,8 +75,8 @@ end
 
 def fact_value(fact_name)
   facts = {}
-  response = @client.request('facts', ['=', 'name', fact_name])
-  response.data.each do |r|
+  response = request('facts', ['=', 'name', fact_name])
+  response.each do |r|
     hostname = r['certname']
     facts[hostname] = r['value']
   end
@@ -69,12 +99,12 @@ def recent_nodes
   query = ['and', host_query, time_query_start, time_query_stop] \
 
   payload = {}
-  payload['summarize-by'] = 'certname'
-  payload['count-by'] = 'certname'
-  payload['counts-filter'] = ['>', 'successes', 0].to_json
+  payload['summarize_by'] = 'certname'
+  payload['count_by'] = 'certname'
+  payload['counts_filter'] = ['>', 'successes', 0].to_json
 
-  response = @client.request('event-counts', query, payload)
-  response.data.each do |r|
+  response = request('event-counts', query, payload)
+  response.each do |r|
     hosts << r['subject']['title']
   end
 
@@ -91,8 +121,8 @@ def tangled?(hostname)
   query = ['and', host_query, time_query_start, time_query_stop]
 
   events = []
-  response = @client.request('events', query)
-  response.data.each do |r|
+  response = request('events', query)
+  response.each do |r|
     next if r['status'] == 'skipped'
     next if r['status'] == 'noop'
     summary = change_summary(r)
@@ -129,12 +159,12 @@ def failed_data
   query = ['and', host_query, time_query]
 
   payload = {}
-  payload['summarize-by'] = 'certname'
-  payload['count-by'] = 'certname'
-  payload['counts-filter'] = ['>', 'failures', 0].to_json
+  payload['summarize_by'] = 'certname'
+  payload['count_by'] = 'certname'
+  payload['counts_filter'] = ['>', 'failures', 0].to_json
 
-  response = @client.request('event-counts', query, payload)
-  response.data.each do |r|
+  response = request('event-counts', query, payload)
+  response.each do |r|
     failed << r['subject']['title']
   end
 
@@ -148,9 +178,9 @@ end
 # Do a query for all nodes and the basic node data (checkins, failures, etc).
 def node_data
   hosts = {}
-  response = @client.request('nodes', ['~', ['fact', 'fqdn'], '^.*$'])
-  response.data.each do |r|
-    hostname = r['name']
+  response = request('nodes', ['~', ['fact', 'fqdn'], '^.*$'])
+  response.each do |r|
+    hostname = r['certname'] || r['name']
     hosts[hostname] = r
   end
 
@@ -161,6 +191,7 @@ end
 # has checked in in that time.
 def node_too_old?(node, hours)
   checkin = node_time(node, 'report_timestamp')
+  checkin = node_time(node, 'facts_timestamp') if checkin.nil?
   return true if checkin.nil?
 
   threshold = Time.now.utc
