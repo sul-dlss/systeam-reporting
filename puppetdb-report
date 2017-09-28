@@ -238,6 +238,12 @@ recent.sort.each do |hostname|
   report[hostname]['tangled'] = 1 if tangled?(hostname)
 end
 
+environments = fact_value('environment')
+environments.each_key do |hostname|
+  next unless report.key?(hostname)
+  report[hostname]['environment'] = environments[hostname]
+end
+
 REQUIRED_CLASSES.each do |classname|
   servers_using = servers_with_class(classname)
   servers_using.each do |hostname|
