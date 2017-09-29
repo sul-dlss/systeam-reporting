@@ -72,11 +72,9 @@ quiet.keys.sort.each do |server|
   message << format("%-45s %s\n", server, quiet[server])
 end
 
-#Net::SMTP.start('localhost') do |smtp|
-#  smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
-#end
-
-puts message
+Net::SMTP.start('localhost') do |smtp|
+  smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
+end
 
 issues = {}
 quiet.keys.each do |server|
@@ -93,6 +91,5 @@ end
 # Now create each of these as a github issue.
 issues.each_key do |assignee|
   i = issues[assignee]
-#  GithubCreateIssues.add_github_issues(token, repo, label, i, desc, assignee)
-  puts "#{assignee}: #{i}"
+  GithubCreateIssues.add_github_issues(token, repo, label, i, desc, assignee)
 end
