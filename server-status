@@ -70,11 +70,18 @@ sub mail_report {
 # Given a list of hosts, check each in DNS to see if they are still active or
 # not.  Returns a list of those that are active.
 sub check_dns {
-    my (@hosts) = @_;
+    my (%hosts) = @_;
 
     my @alive = ();
     my $res = Net::DNS::Resolver->new;
-    for my $host (@hosts) {
+    for my $host (keys %hosts) {
+
+        # Don't bother doing DNS lookups on servers that are in netdb.
+        if (exists $hosts{$host}{'netdb'} && @{ $hosts{$host}{'netdb'}{'addresses'} } > 0) {
+            push(@alive, $host);
+            next;
+        }
+
         my $fullhost = $host;
         if ($fullhost !~ m{\.}) {
             $fullhost .= '.stanford.edu';
@@ -303,7 +310,7 @@ sub find_hosts {
         my $canonical = map_host_alias($host, %aliases);
         $hosts{$canonical}{'puppetdb'} = 1;
     }
-    for my $host (check_dns(keys %hosts)) {
+    for my $host (check_dns(%hosts)) {
         my $canonical = map_host_alias($host, %aliases);
         $hosts{$canonical}{'alive'} = 1;
     }

@@ -15,7 +15,7 @@ TANGLED_HOURS = 4
 REQUIRED_CLASSES = %w(Splunk Diamond Mcollective).freeze
 
 @puppetdbs = {
-  'v3' => 'http://sulpuppet-db.stanford.edu:8080/v3',
+#  'v3' => 'http://sulpuppet-db.stanford.edu:8080/v3',
   'v4' => 'http://sulpuppet4-db.stanford.edu:8080/pdb/query/v4',
 }
 

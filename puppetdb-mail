@@ -7,14 +7,35 @@ require 'github_create_issues'
 require 'net/smtp'
 require 'yaml'
 
-EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
+#EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
+#PUPPET_STATE = '/var/lib/systems-dashboard/puppetstate.yaml'
+
+EMAIL_TO = 'jonrober@stanford.edu'.freeze
+PUPPET_STATE = '/tmp/puppetstate.yaml'
+
+@SYSADMINS = %w(jonrober ssklar rsmith11 efahy azanella jmorley kamchan)
+@DEFAULT_ASSIGNEE = 'jonrober'
 
 # Data for github issue creation.
 repo  = 'sul-dlss/operations-tasks'
 label = 'puppet-notreporting'
 token = File.open('/etc/github-issues/oauth-token', 'rb').read
 desc = 'Please check to make sure that puppet is running, enabled, and against a good branch.'
-asignee = 'jonrober'
+
+#############################################################################
+# Support functions
+#############################################################################
+
+def server_assignee(environment)
+  assignee = @DEFAULT_ASSIGNEE
+  @SYSADMINS.each do |s|
+    next unless environment =~ /^#{s}/
+    assignee = s
+    break
+  end
+
+  assignee
+end
 
 #############################################################################
 # Main routine
@@ -23,7 +44,7 @@ asignee = 'jonrober'
 quiet = {}
 tangled = []
 failed = []
-report = YAML.load_file('/var/lib/systems-dashboard/puppetstate.yaml')
+report = YAML.load_file(PUPPET_STATE)
 report.keys.each do |server|
   failed.push(server) if report[server].key?('failed')
   tangled.push(server) if report[server].key?('tangled')
@@ -51,13 +72,27 @@ quiet.keys.sort.each do |server|
   message << format("%-45s %s\n", server, quiet[server])
 end
 
-Net::SMTP.start('localhost') do |smtp|
-  smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
+#Net::SMTP.start('localhost') do |smtp|
+#  smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
+#end
+
+puts message
+
+issues = {}
+quiet.keys.each do |server|
+  assignee = server_assignee(report[server]['environment'])
+  issues[assignee] = [] unless issues.key?(assignee)
+  issues[assignee].push("#{server} has not run puppet in over 24 hours")
+end
+failed.each do |server|
+  assignee = server_assignee(report[server]['environment'])
+  issues[assignee] = [] unless issues.key?(assignee)
+  issues[assignee].push("#{server}'s puppet runs are failing'")
 end
 
 # Now create each of these as a github issue.
-issues = []
-quiet.keys.each do |server|
-  issues.push("#{server} has not run puppet in over 24 hours")
+issues.each_key do |assignee|
+  i = issues[assignee]
+#  GithubCreateIssues.add_github_issues(token, repo, label, i, desc, assignee)
+  puts "#{assignee}: #{i}"
 end
-GithubCreateIssues.add_github_issues(token, repo, label, issues, desc, asignee)
