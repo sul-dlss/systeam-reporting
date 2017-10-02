@@ -26,7 +26,12 @@ desc = 'Please check to make sure that puppet is running, enabled, and against a
 # Support functions
 #############################################################################
 
-def server_assignee(environment)
+def server_assignee(server, environment)
+  if (server =~ /^dlss-(dev|win)-(\S+)\.stanford\.edu$/)
+    assignee = Regexp.last_match[2]
+    return assignee if @SYSADMINS.include?(assignee)
+  end
+
   assignee = @DEFAULT_ASSIGNEE
   @SYSADMINS.each do |s|
     next unless environment =~ /^#{s}/
@@ -78,14 +83,14 @@ end
 
 issues = {}
 quiet.keys.each do |server|
-  assignee = server_assignee(report[server]['environment'])
+  assignee = server_assignee(server, report[server]['environment'])
   issues[assignee] = [] unless issues.key?(assignee)
   issues[assignee].push("#{server} has not run puppet in over 24 hours")
 end
 failed.each do |server|
-  assignee = server_assignee(report[server]['environment'])
+  assignee = server_assignee(server, report[server]['environment'])
   issues[assignee] = [] unless issues.key?(assignee)
-  issues[assignee].push("#{server}'s puppet runs are failing'")
+  issues[assignee].push("#{server}'s puppet runs are failing")
 end
 
 # Now create each of these as a github issue.
