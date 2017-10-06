@@ -13,8 +13,8 @@ stack_hostnames << response.data.collect { |x| x['certname'] }
 stack_hostnames.flatten!
 
 all_hostnames = []
-response = client.request('nodes', ['~', 'name', '.*'])
-all_hostnames << response.data.collect { |x| x['name'] }
+response = client.request('nodes', ['~', 'certname', '.*'])
+all_hostnames << response.data.collect { |x| x['certname'] }
 all_hostnames.flatten!
 
 all_hostnames.sort.each do |host|

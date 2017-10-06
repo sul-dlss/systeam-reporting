@@ -32,9 +32,9 @@ our @OPTIONS = (
     ['yaml',       'export results to yaml for other programs to use']
 );
 
-my $PUPPETDB_RESOURCES = 'http://sulpuppet4-db.stanford.edu:8080/v3/resources';
+my $PUPPETDB_RESOURCES = 'http://sulpuppet4-db.stanford.edu:8080/pdb/query/v4/resources';
 my $PUPPETDB_QUERY_FMT = 'query=["and", ["=", "type", "%s"], ["=", "title", "%s"]]';
-my $PUPPETDB_NODES     = 'http://sulpuppet4-db.stanford.edu:8080/v3/nodes';
+my $PUPPETDB_NODES     = 'http://sulpuppet4-db.stanford.edu:8080/pdb/query/v4/nodes';
 
 # A list of regular expressions for hosts that we don't normally want to see
 # in our reports.  These should only be shown during quarterly reports for
@@ -187,7 +187,7 @@ sub puppetdb_hosts {
     my $json_obj = JSON->new->allow_nonref;
     my $nodes = $json_obj->decode($res->content);
     foreach my $node (@{$nodes}) {
-        my $hostname = $node->{name};
+        my $hostname = $node->{certname};
         $hostname =~ s{\.stanford\.edu$}{};
         push(@servers, $hostname);
     }
