@@ -57,7 +57,7 @@ end
 
 # Get the servers to act on from given stack names.
 hosts = {}
-client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
+client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
 ARGV.each do |stack|
   servers = client.request('nodes', ['=', ['fact', 'stack'], stack])
   servers.data.each do |x|

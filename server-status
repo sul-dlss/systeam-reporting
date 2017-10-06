@@ -32,9 +32,9 @@ our @OPTIONS = (
     ['yaml',       'export results to yaml for other programs to use']
 );
 
-my $PUPPETDB_RESOURCES = 'http://sulpuppet-db.stanford.edu:8080/v3/resources';
+my $PUPPETDB_RESOURCES = 'http://sulpuppet4-db.stanford.edu:8080/v3/resources';
 my $PUPPETDB_QUERY_FMT = 'query=["and", ["=", "type", "%s"], ["=", "title", "%s"]]';
-my $PUPPETDB_NODES     = 'http://sulpuppet-db.stanford.edu:8080/v3/nodes';
+my $PUPPETDB_NODES     = 'http://sulpuppet4-db.stanford.edu:8080/v3/nodes';
 
 # A list of regular expressions for hosts that we don't normally want to see
 # in our reports.  These should only be shown during quarterly reports for
@@ -127,7 +127,7 @@ sub find_all_vms {
 
 # Find hiera status using a remctl command on the puppet machines.
 sub find_hiera_status {
-    my $output = `remctl sulpuppet-c hiera-status list`;
+    my $output = `remctl sulpuppet4-a hiera-status list`;
 
     my $json_obj = JSON->new->allow_nonref;
     my $hieradata = $json_obj->decode($output);

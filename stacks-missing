@@ -7,7 +7,7 @@ require 'puppetdb'
 
 # Get the servers to act on from given stack names.
 stack_hostnames = []
-client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
+client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
 response = client.request('facts', ['=', 'name', 'stack'])
 stack_hostnames << response.data.collect { |x| x['certname'] }
 stack_hostnames.flatten!
