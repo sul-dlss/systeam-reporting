@@ -7,20 +7,69 @@ require 'github_create_issues'
 require 'net/smtp'
 require 'yaml'
 
-#EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
-#PUPPET_STATE = '/var/lib/systems-dashboard/puppetstate.yaml'
+require 'json'
+require 'uri'
+require 'net/http'
 
-EMAIL_TO = 'jonrober@stanford.edu'.freeze
-PUPPET_STATE = '/tmp/puppetstate.yaml'
+EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
+PUPPET_STATE = '/var/lib/systems-dashboard/puppetstate.yaml'
 
 @SYSADMINS = %w(jonrober ssklar rsmith11 efahy azanella jmorley kamchan)
-@DEFAULT_ASSIGNEE = 'jonrober'
+#@opsgenie_apikey = '38c9f49f-b566-44e9-a0dc-0090d5cb3d24'
+@opsgenie_apikey = File.open('/etc/misc/opsgenie.api').read
 
 # Data for github issue creation.
 repo  = 'sul-dlss/operations-tasks'
 label = 'puppet-notreporting'
 token = File.open('/etc/github-issues/oauth-token', 'rb').read
 desc = 'Please check to make sure that puppet is running, enabled, and against a good branch.'
+
+#############################################################################
+# Opsgenie functions
+#############################################################################
+
+# Perform a request against opsgenie and return the JSON response.
+def opsgenie_fetch_json(url, params, req_type)
+  uri = URI(url)
+  https = Net::HTTP.new(uri.host, uri.port)
+  https.use_ssl = true
+  header = {
+    "Content-Type" =>"application/json",
+    "Authorization" => "GenieKey #{@opsgenie_apikey}"
+  }
+  begin
+    if req_type=='post'
+      res = https.post(uri.path, params, initheader = header)
+    else
+      uri.query = params.to_json
+      res = https.get(uri.path, initheader = header)
+    end
+    if res.is_a?(Net::HTTPSuccess)
+      return JSON.parse(res.body)
+    else
+      puts res
+      return false
+    end
+  rescue => e
+    return false
+  end
+end
+
+# Request the on-call responder from OpsGenie and return it.
+def on_call
+  url = "https://api.opsgenie.com/v2/schedules/on-calls"
+  params = nil
+  response =  opsgenie_fetch_json(url, params, 'get')
+
+  responder = ''
+  response['data'].each do |r|
+    next if r['_parent']['name'] != 'ops_team_schedule'
+    responder = r['onCallParticipants'][0]['name'].gsub(/@stanford\.edu$/, '')
+    break
+  end
+
+  responder
+end
 
 #############################################################################
 # Support functions
@@ -32,7 +81,7 @@ def server_assignee(server, environment)
     return assignee if @SYSADMINS.include?(assignee)
   end
 
-  assignee = @DEFAULT_ASSIGNEE
+  assignee = @default_asignee
   @SYSADMINS.each do |s|
     next unless environment =~ /^#{s}/
     assignee = s
@@ -45,6 +94,8 @@ end
 #############################################################################
 # Main routine
 #############################################################################
+
+@default_asignee = on_call
 
 quiet = {}
 tangled = []
@@ -80,6 +131,8 @@ end
 Net::SMTP.start('localhost') do |smtp|
   smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
 end
+
+exit
 
 issues = {}
 quiet.keys.each do |server|
