@@ -61,7 +61,7 @@ client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
 ARGV.each do |stack|
   servers = client.request('nodes', ['=', ['fact', 'stack'], stack])
   servers.data.each do |x|
-    host = x['name']
+    host = x['certname']
     response = client.request('facts', ['and', ['=', 'certname', host],
                                         ['=', 'name', 'reboot_stage']])
     stage = if response.nil? || response.data.empty?
