@@ -4,6 +4,7 @@
 # about each server failed, quiet, or tangled.
 
 require 'github_create_issues'
+require 'optparse'
 require 'net/smtp'
 require 'yaml'
 
@@ -14,15 +15,23 @@ require 'net/http'
 EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
 PUPPET_STATE = '/var/lib/systems-dashboard/puppetstate.yaml'
 
-@SYSADMINS = %w(jonrober ssklar rsmith11 efahy azanella jmorley kamchan)
-#@opsgenie_apikey = '38c9f49f-b566-44e9-a0dc-0090d5cb3d24'
-@opsgenie_apikey = File.open('/etc/misc/opsgenie.api').read
+# List sysadmins by sunetid mapping to github uid.
+@SYSADMINS = {
+  'jonrober' => 'jonrober',
+  'ssklar'   => 'ssklar',
+  'rsmith11' => 'rsmith11',
+  'efahy'    => 'eefahy',
+  'azanella' => 'tallenaz',
+  'jmorley'  => 'julianmorley',
+  'kamchan'  => 'kamchan',
+}
+@opsgenie_apikey = File.open('/etc/tokens/opsgenie.api').read
 
 # Data for github issue creation.
-repo  = 'sul-dlss/operations-tasks'
-label = 'puppet-notreporting'
-token = File.open('/etc/github-issues/oauth-token', 'rb').read
-desc = 'Please check to make sure that puppet is running, enabled, and against a good branch.'
+@repo  = 'sul-dlss/operations-tasks'
+@label = 'puppet-notreporting'
+@token = File.open('/etc/tokens/github-oauth-token', 'rb').read
+@desc = 'Please check to make sure that puppet is running, enabled, and against a good branch.'
 
 #############################################################################
 # Opsgenie functions
@@ -75,14 +84,61 @@ end
 # Support functions
 #############################################################################
 
+# Given a message, send it out as an email.
+def mail_message(message)
+  Net::SMTP.start('localhost') do |smtp|
+    smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
+  end
+end
+
+# Go through each quiet server, discover the assignee for the server, and then
+# create an issue subject for that person + server.
+def quiet_issues(quiet, issues, report)
+  quiet.keys.each do |server|
+    assignee = server_assignee(server, report[server]['environment'])
+    issues[assignee] = [] unless issues.key?(assignee)
+    issues[assignee].push("#{server} has not run puppet in over 24 hours")
+  end
+
+  issues
+end
+
+# Go through each failed server, discover the assignee for the server, and then
+# create an issue subject for that person + server.
+def failed_issues(failed, issues, report)
+  failed.each do |server|
+    assignee = server_assignee(server, report[server]['environment'])
+    issues[assignee] = [] unless issues.key?(assignee)
+    issues[assignee].push("#{server}'s puppet runs are failing")
+  end
+
+  issues
+end
+
+# Given data structures for the quiet and failed servers, create issues for
+# each in github.
+def create_issues(quiet, failed, report)
+  issues = {}
+  issues = quiet_issues(quiet, issues, report)
+  issues = failed_issues(failed, issues, report)
+
+  # Now create each of these as a github issue.
+  issues.each_key do |assignee|
+    i = issues[assignee]
+    github_uid = @SYSADMINS[assignee]
+    GithubCreateIssues.add_github_issues(@token, @repo, @label, i, @desc,
+                                         github_uid)
+  end
+end
+
 def server_assignee(server, environment)
   if (server =~ /^dlss-(dev|win)-(\S+)\.stanford\.edu$/)
     assignee = Regexp.last_match[2]
-    return assignee if @SYSADMINS.include?(assignee)
+    return assignee if @SYSADMINS.has_key?(assignee)
   end
 
   assignee = @default_asignee
-  @SYSADMINS.each do |s|
+  @SYSADMINS.each_key do |s|
     next unless environment =~ /^#{s}/
     assignee = s
     break
@@ -94,6 +150,15 @@ end
 #############################################################################
 # Main routine
 #############################################################################
+
+# Parse the options, currently --verbose and --period.
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: puppetdb-mail [options]"
+  opts.on('-d', '--dryrun', 'Do not send mail or create tickets') do
+    options[:dryrun] = true
+  end
+end.parse!
 
 @default_asignee = on_call
 
@@ -128,26 +193,9 @@ quiet.keys.sort.each do |server|
   message << format("%-45s %s\n", server, quiet[server])
 end
 
-Net::SMTP.start('localhost') do |smtp|
-  smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
-end
-
-exit
-
-issues = {}
-quiet.keys.each do |server|
-  assignee = server_assignee(server, report[server]['environment'])
-  issues[assignee] = [] unless issues.key?(assignee)
-  issues[assignee].push("#{server} has not run puppet in over 24 hours")
-end
-failed.each do |server|
-  assignee = server_assignee(server, report[server]['environment'])
-  issues[assignee] = [] unless issues.key?(assignee)
-  issues[assignee].push("#{server}'s puppet runs are failing")
-end
-
-# Now create each of these as a github issue.
-issues.each_key do |assignee|
-  i = issues[assignee]
-  GithubCreateIssues.add_github_issues(token, repo, label, i, desc, assignee)
+if (options[:dryrun])
+  puts message
+else
+  mail_message(message)
+  create_issues(quiet, failed, report)
 end
