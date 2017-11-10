@@ -88,6 +88,8 @@ OptionParser.new do |opts|
 end.parse!
 
 webauth = servers_with_class('Profile::Webserver::Vhost::Webauth')
+webauth << servers_with_class('S_apache::Webauth')
+webauth.flatten!
 if (options[:dryrun])
   puts webauth.sort
 else
