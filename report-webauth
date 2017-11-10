@@ -9,8 +9,7 @@ require 'optparse'
 require 'yaml'
 require 'active_support/all'
 
-#EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
-EMAIL_TO = 'jonrober@stanford.edu'.freeze
+EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
 
 @puppetdbs = {
 #  'v3' => 'http://sulpuppet-db.stanford.edu:8080/v3',
