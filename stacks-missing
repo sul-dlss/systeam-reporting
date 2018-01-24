@@ -4,6 +4,17 @@
 # from the command line.
 
 require 'puppetdb'
+require 'csv'
+require 'optparse'
+
+# Parse the options, used to tell if we're doing a bare report or one in CSV.
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: stacks-missing [options]"
+  opts.on('--csv', 'Format the report as CSV') do
+    options[:csv] = true
+  end
+end.parse!
 
 # Get the servers to act on from given stack names.
 stack_hostnames = []
@@ -17,7 +28,17 @@ response = client.request('nodes', ['~', 'certname', '.*'])
 all_hostnames << response.data.collect { |x| x['certname'] }
 all_hostnames.flatten!
 
+# Print a header if printing to CSV.
+if options[:csv]
+  puts ['Hostname', 'Missing stack'].to_csv
+end
+
+# Actually print the report.
 all_hostnames.sort.each do |host|
   next if stack_hostnames.include?(host)
-  puts host
+  if options[:csv]
+    puts [host, '*'].to_csv
+  else
+    puts host
+  end
 end
