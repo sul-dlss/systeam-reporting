@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+
+# Determine server environments first by the stacks fact, and if that is not
+# set then by hostname.
+
+require 'puppetdb'
+require 'csv'
+
+# Get the servers to act on from given stack names.
+stack_hostnames = {}
+client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
+response = client.request('facts', ['=', 'name', 'stack'])
+response.data.each do |r|
+  host = r['certname']
+  stack = r['value']
+  stack_hostnames[host] = stack
+end
+
+# Grab a list of all hostnames, for servers without a stack fact.
+all_hostnames = []
+response = client.request('nodes', ['~', 'certname', '.*'])
+all_hostnames << response.data.collect { |x| x['certname'] }
+all_hostnames.flatten!
+
+# Actually print the report.
+puts ['Hostname', 'Environment'].to_csv
+all_hostnames.sort.each do |host|
+  environment = ''
+
+  # If there is a stack, use that to find our environment.
+  if stack_hostnames.include?(host) and stack_hostnames[host] =~ /-(dev|stage|prod|test|uat)/
+    environment = $~[1]
+
+  # Otherwise use the hostname itself, if it has the environment.
+  elsif host =~ /-(dev|stage|prod|test|uat)/
+    environment = $~[1]
+
+  # More limited case where there is no - separating the environment.
+  elsif host =~ /(dev|stage|prod|test|uat)\d?\./
+    environment = $~[1]
+  end
+
+  # Test and uat boxes count as stage, so munge that fact.
+  if environment == 'test' or environment == 'uat'
+    environment = 'stage'
+  end
+
+  puts [host, environment].to_csv
+end
