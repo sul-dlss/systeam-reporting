@@ -1,0 +1,141 @@
+#!/usr/bin/env ruby
+#
+# This reads iptables data from puppetdb and formats it to just tell us lines
+# that we care about.
+
+require 'ipaddr'
+require 'puppetdb'
+require 'csv'
+
+# Determine if a given IP or network range is at Stanford.
+def stanford_network? (host)
+  if host == 'ALL'
+    return false
+  end
+
+  host_network = IPAddr.new(host)
+
+  # This is taken from puppet's list of network ranges.
+  stanford_networks = ['171.64.0.0/14',
+                       '10.32.0.0/15',
+                       '10.34.0.0/15',
+                       '10.98.0.0/15',
+                       '10.109.28.0/22',
+                       '172.24.0.0/14',
+                       '172.20.206.128/25',
+                       '172.20.207.0/25',
+                       '128.12.0.0/16',
+                       '10.30.0.0/15',
+                       '172.19.0.0/16',
+                       '171.66.188.121/29',
+                       '171.66.128.0/23',
+                       '204.63.224.0/21',
+                       '172.20.224.0/21',
+                       '171.66.16.0/21',
+                       '171.66.24.0/21',
+                       '171.66.176.0/20',
+                       '171.67.35.128/25',
+                       '171.67.34.0/24',
+                       '172.27.34.0/24',
+                       '171.67.23.0/24',
+                       '171.67.33.192/27',
+                       '172.20.192.0/23',
+                       '171.67.35.0/25',
+                       '171.67.45.0/24',
+                       '171.67.21.0/24',
+                       '171.67.37.0/25',
+                       '171.67.36.0/25',
+                       '171.67.36.130',
+                       '172.16.70.29',
+                       '172.27.36.10',
+                       '171.67.36.131',
+                       '172.16.70.28',
+                       '172.27.36.11',
+                       '171.67.36.2',
+                       '171.67.46.131',
+                       '172.27.36.2',
+                       '171.67.36.3',
+                       '171.67.46.132',
+                       '172.27.36.3',
+                       '172.20.21.208/28',
+                       '172.20.21.192/28',
+                       '10.111.1.160/27',
+                       '171.67.8.224/27',
+                       '172.20.194.0/24',
+                       '171.67.33.224/27',
+                     ]
+  stanford_networks.each do |network|
+    network_range = IPAddr.new(network)
+    if network_range.include?(host_network)
+      return true
+    end
+  end
+
+  return false
+end
+
+# Given a list of rules for a single server, filter out lines we don't care
+# about and reformat any remaining lines to be more readable.
+def clean_iptables (rules)
+  cleaned = []
+  rules.each_line do |l|
+
+    # Skip everything that's not an accept rule.
+    next unless l =~ /^-A /
+    next unless l =~ /-j ACCEPT/
+
+    # Skip localhost rules and related established rules.
+    next if l =~ /-i lo/
+    next if l =~ /--state RELATED,ESTABLISHED/
+
+    # Skip pure icmp queries and errors.
+    next if l =~ /--icmp-type (0|3|8|11)/
+
+    # Now make the formatting of whatever remains cleaner.
+    if l =~ / -s (\S+) /
+      source = $~[1]
+    else
+      source = 'ALL'
+    end
+    if l =~ / --d?ports? (\S+) /
+      ports = $~[1]
+    else
+      ports = 'ALL'
+    end
+    if l =~ / --comment "(.+)" /
+      comment = $~[1]
+    else
+      comment = ''
+    end
+
+    # Now ignore source/port combinations that are standard for all hosts.
+    next if source == '171.64.0.0/14' and (ports == '22,4373' or ports == '22' or ports == '4373')
+    next if source == '10.32.0.0/15' and (ports == '22,4373' or ports == '22' or ports == '4373')
+    next if source == '10.34.0.0/15' and (ports == '22,4373' or ports == '22' or ports == '4373')
+    next if source == '10.98.0.0/15' and (ports == '22,4373' or ports == '22' or ports == '4373')
+    next if source == '172.24.0.0/14' and (ports == '22,4373' or ports == '22' or ports == '4373')
+    next if source == '172.20.206.128/25' and (ports == '22,4373' or ports == '22' or ports == '4373')
+    next if source == '172.20.207.0/25' and (ports == '22,4373' or ports == '22' or ports == '4373')
+    next if source == '172.20.206.189/32' and ports == '5666'
+    next if source == '172.20.207.48/32' and ports == '5666'
+
+    next if stanford_network?(source)
+
+    summary = "#{source} ports #{ports}: #{comment}"
+    cleaned.push(summary)
+  end
+
+  cleaned
+end
+
+# Get the servers to act on from given stack names.
+stack_hostnames = []
+client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
+response = client.request('facts', ['=', 'name', 'iptables'])
+
+# Print a header, then go through and filter any lines for our servers.
+puts ['Hostname', 'Iptables'].to_csv
+response.data.each do |server|
+  cleaned = clean_iptables(server['value'])
+  puts [server['certname'], cleaned.join("\n")].to_csv
+end
