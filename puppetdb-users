@@ -1,11 +1,14 @@
-#!/usr/bin/python
+#!/usr/bin/env ruby
 
-#########################################################################
-### Configuration #######################################################
-#########################################################################
+# This is a puppetdb wrapper meant to do a report on non-standard users on
+# systems.
 
-config_file = '/etc/puppetdb/puppetdb.json'
+require 'puppetdb'
+require 'csv'
+require 'optparse'
 
+# Current sysadmin list.  It would be nice to generate this from a workgroup,
+# but I can't find any that match.
 sysadmins  = [
     'azanella',
     'calavt',
@@ -17,8 +20,8 @@ sysadmins  = [
     'ssklar',
 ]
 
-# Not just developers, but anyone in SUL.
-developers = [
+# Everyone else in SUL.
+other_sul = [
     'ahafele',
     'amcollie',
     'atz',
@@ -42,39 +45,34 @@ developers = [
     'petucket',
     'pjreed',
     'rlunnon',
+    'snydman',
     'suntzu',
     'tommyi',
     'vtang',
+    'saravs',
 ]
 
-system = [
+# Various system users that have login accounts.
+system_users = [
     'apache',
-    'apt',
-    'chron',
-    'drupal',
     'dor_indexer',
     'ezproxy',
-    'hadoop',
+    'mcollective',
     'nagiosuser',
-    'netdb-server',
     'nfsnobody',
     'nrpe',
     'oracle',
-    'pokkitd',
     'puppet',
     'root',
     'splunk',
-    'stats',
-    'sultsm0',
     'sultsm10',
     'sultsm20',
     'sultsm30',
     'sultsm99',
-    'tftp',
-    'tomcat',
-    'varnish',
 ]
 
+# And known group-user accounts, where we create an account for multiple people
+# to log in.
 groups = [
     'bibliopedia',
     'blacklight',
@@ -99,8 +97,8 @@ groups = [
     'library_hours',
     'loris',
     'lyberadmin',
+    'lockss',
     'mathlm',
-#    'ntirety',
     'ossec',
     'parker',
     'purl',
@@ -112,7 +110,7 @@ groups = [
     'sdr2service',
     'solr',
     'squeezer',
-    'stacks'
+    'stacks',
     'sulmuse',
     'was',
     'webteam',
@@ -121,203 +119,53 @@ groups = [
     'zkeeper',
 ]
 
-#########################################################################
-### Declarations ########################################################
-#########################################################################
+#######################################################################
+# Main program
+#######################################################################
 
-import json, optparse, re, requests, sys
-from collections import defaultdict
-import smtplib
+# Parse the options, used to tell if we're doing a bare report or one in CSV.
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: stacks-missing [options]"
+  opts.on('--csv', 'Format the report as CSV') do
+    options[:csv] = true
+  end
+end.parse!
 
-#########################################################################
-### JSON Parsing Subroutines ############################################
-#########################################################################
+# Get all user resources to act on.
+hosts = {}
+client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
+response = client.request('resources', ['=', 'type', 'User'])
+response.data.each do |response|
+  username = response['title']
+  hostname = response['certname']
 
-def parseConfig(file):
-    """
-    Load a json configuration from a configuration file.  Sets a global
-    'config' variable.
-    """
-    global config
+  # Ignore users without login shells.
+  next if response['parameters']['shell'] == '/sbin/nologin'
 
-    try:
-        config = json.load(open(config_file, 'r'))
-    except IOError, e:
-        print "file error:  %s" % e
-        sys.exit (2)
-    except Exception, e:
-        print "unknown error:  %s" % e
-        sys.exit (2)
+  # Ignmore any users in our known lists.
+  next if sysadmins.include?(username)
+  next if other_sul.include?(username)
+  next if system_users.include?(username)
+  next if groups.include?(username)
 
-    return config
+  # We have a lot of system users that are named after part of the hostname.
+  # There are two cases here -- either where hostname starts with sul- or
+  # cidr- and the username is that second part, or where the hostname doesn't
+  # start with that and the username is the entire first part.
+  if hostname =~ /^(sul|cidr)-([^-]+)-/
+    next if username == $~[2]
+  elsif hostname =~ /^([^-]+)-/
+    next if username == $~[1]
+  end
 
-#########################################################################
-### PuppetDB Query Subroutines ##########################################
-#########################################################################
+  hosts[hostname] = [] unless hosts.key?(hostname)
+  hosts[hostname].push(username)
+end
 
-def queryResourcesPuppetDb(type, data):
-    """
-    Query the puppetdb resources endpoint.  Type 'type' is required, and
-    should have the first letter upper-case (matching the puppet internals).
-    Hash data can have:
-
-       hostname     Only match on this hostname.  Can include wildcards.
-
-    Returns an array of matching json entries.
-    """
-
-    fields = []
-    fields.append ("['=', 'type', '%s']" % type)
-    if data['hostname']:
-        fields.append ("['~', 'certname', '^%s$' ]" % data['hostname'])
-    query = "['and', %s]" % (', '.join(fields))
-
-    try:
-        payload = { 'query': json.dumps(eval(query)) }
-    except SyntaxError:
-        print 'Malformed query: %s' % query
-        return {}
-
-    headers = {'Accept': 'application/json'}
-    try:
-        resources_url = "%s%s" % ( opt.server, opt.url_base )
-        r = requests.get(resources_url, headers=headers, params=payload,
-                         verify=False)
-    except Exception, e:
-        print '%s (bad json?: %s)' % (e, payload)
-        raise e
-
-    if len(r.json()) == 0:
-        return []
-
-    nodes = []
-    for node in r.json():
-        nodes.append(node)
-
-    return nodes
-
-#########################################################################
-### main () #############################################################
-#########################################################################
-
-def main():
-    usage = "%prog [options] Class"
-    parseConfig(config_file)
-
-    p = optparse.OptionParser (usage = usage,
-        description = "query puppetdb resources endpoint")
-    p.add_option ('--server', dest='server', default=config['server'],
-        help="puppetdb server (default: %default)")
-    p.add_option ('--url_base', dest='url_base',
-        default=config['resources_url_base'],
-        help="relative URL to puppetdb for default resources query")
-    p.add_option ('--hostname', dest='hostname',
-        default=None,
-        help="hostname to query (default: all hosts)")
-    p.add_option ('--email', dest='email',
-        default=None,
-        help="email address to send to (default: none)")
-
-    global opt
-    opt, args = p.parse_args()
-
-    classname = 'User'
-    servers = defaultdict(list)
-
-    output = ''
-    try:
-        nodes = queryResourcesPuppetDb(classname, { 'hostname': opt.hostname})
-        if not nodes:
-            print "no matches"
-            sys.exit(-1)
-        for i in nodes:
-            server = i['certname']
-            name = i['title']
-            servers[server].append(name)
-    except Exception, e:
-        print "error: %s" % e
-        sys.exit(-1)
-
-    for server in sorted(servers):
-        found = 0
-        developer = 0
-
-        # We have a number of system users named after the host. Split up the
-        # hostname so that we can see if the user is part of the system.
-        short_server = server.replace('.stanford.edu', '')
-        server_parts = server.split('-')
-
-        for user in sorted(set(servers[server])):
-            if (user not in sysadmins and user not in system
-                and user not in groups and user not in server_parts):
-
-                found = 1
-                if (user in developers):
-                    developer = 1
-                else:
-                    output += '{0:40} {1}'.format(server, user) + "\n"
-
-        if (developer == 1):
-            output += '{0:40} {1}'.format(server, 'Developers') + "\n"
-        if (found == 1):
-            output += "\n"
-
-    if opt.email:
-        fromaddr = 'nobody@stanford.edu'
-        toaddr = opt.email
-        header = ("From:{0}\nTo:{1}\nSubject: Quarterly System Users\n\n").format(fromaddr, toaddr)
-        server = smtplib.SMTP('localhost')
-        server.sendmail(fromaddr, toaddr, header + output)
-        server.quit()
-
-    else:
-        print output
-
-    sys.exit(0)
-
-if __name__ == '__main__':
-    main()
-
-#########################################################################
-### POD Documentation ###################################################
-#########################################################################
-## We use this to generate man pages.
-
-"""
-
-=head1 NAME
-
-puppetdb-users - Report on puppetdb nodes with non-systeam, non-system users
-
-=head1 SYNOPSYS
-
-B<puppetdb-users>
-
-=head1 USAGE
-
-puppetdb-resources queries the central puppetdb resources type for all users on
-each server.  This then uses a few lists of known users to remove accounts that
-should always be on the system and system accounts.  Another list is used to
-gather together any developers into just one entry that shows that there are
-known developers on the box.  Any servers with the developers pseudo-user or
-unknown users are then reported on.
-
-This is meant to do quarterly reporting on all users on our systems for
-auditing purposes.
-
-=head1 AUTHORS
-
-Jon Robertson <jonrober@stanford.edu>
-adapted from puppetdb-resouces by Tim Skirvin <tskirvin@fnal.gov>
-
-=head1 COPYRIGHT
-
-Originally copyright 2015, Fermi National Accelerator Laboratory
-Additions copyright 2016, The Board of Trustees of the Leland Stanford Junior University
-
-This program is free software; you may redistribute it and/or modify
-it under the same terms as Perl itself.
-
-=cut
-
-"""
+# Actually print the report.
+puts ['Hostname', 'Users'].to_csv
+hosts.keys.sort.each do |hostname|
+  users = hosts[hostname].join("|")
+  puts [hostname, users].to_csv
+end
