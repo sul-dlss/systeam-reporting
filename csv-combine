@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+#
+# Combine multiple files that contain server data into one.  We assume that
+# each file starts with a header, and that the host column is always
+# 'Hostname'.
+
+require 'csv'
+
+combined = {}
+all_headers = []
+
+# Load in the data for each of the CSV files given on the command-line.
+ARGV.each do |fname|
+  headers = []
+
+  table = CSV.read(fname, { headers: true, return_headers: false })
+  table.each do |row|
+    hostname = ''
+
+    # Split each by the column name and field, adding new columns to the list
+    # of new columns.
+    row.each do |header, field|
+      if header == 'Hostname'
+        hostname = field
+        combined[hostname] = {} unless combined.key?(hostname)
+      elsif header != ''
+        combined[hostname][header] = field
+        all_headers << header
+      end
+    end
+  end
+end
+
+# Add some business logic to the data.  This assumes specific values, while the
+# rest of the file is data-agnostic.
+all_headers.unshift('Threat Level')
+combined.keys.each do |hostname|
+  server = combined[hostname]
+  additional = ''
+  server['Apache'] = '' unless server.key?('Apache')
+  if server['Tomcat'] == '*' and server['Apache'] == '' and server['Iptables'] =~ /ALL ports /
+    additional = '1: Tomcat without apache, open to the world'
+  elsif server['Apache'] != '' and server['Environment'] == 'prod' and server['Iptables'] =~ /ALL ports/
+    additional = '2: Apache prod box open to the world'
+  elsif server['Apache'] != '' and server['Environment'] != 'prod' and server['Iptables'] =~ /ALL ports/
+    additional = '3: Apache non-prod box open to the world'
+  elsif server['Iptables'] =~ /ALL ports/
+    additional = '4: Other server open to the world'
+  end
+  combined[hostname]['Threat Level'] = additional
+end
+
+# Now we've combined everything.  Print out the resulting CSV file.  Since all
+# rows may not have all the same fields, use the list of all found headers and
+# initialize any missing columns.
+all_headers.uniq!
+puts ['Hostname', all_headers].flatten.to_csv
+combined.keys.sort.each do |hostname|
+  row = [hostname]
+  all_headers.each do |h|
+    combined[hostname][h] = '' unless combined[hostname].key?(h)
+    row.push(combined[hostname][h])
+  end
+  puts row.to_csv
+end
