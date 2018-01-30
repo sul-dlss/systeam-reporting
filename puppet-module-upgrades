@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+#
+# Scan the puppet modules to find those that have pending updates.
+
+require 'github_create_issues'
+require 'json'
+require 'httparty'
+
+moduledir = 'modules'
+
+# transition - public advertised version older than current version
+# puppet_agent - public advertised version older than current version
+ignoremodules = ['dovecot', 'logrotate', 'transition', 'puppet_agent']
+
+# Data for github issue creation.
+@repo  = 'sul-dlss/operations-tasks'
+@label = 'puppet-notreporting'
+@token = File.open('/etc/tokens/github-oauth-token', 'rb').read
+
+Dir.foreach(moduledir) do |entry|
+  path = moduledir + '/' + entry
+  metadata = path + '/metadata.json'
+
+  # Only care about directories with a metadata file.
+  next unless File.directory?(path)
+  next unless File.exists?(metadata)
+  next if ignoremodules.include?(entry)
+
+  # Read the metadata and parse it out to get the current module version.
+  current_json     = File.read(metadata)
+  current_metadata = JSON.parse(current_json)
+  current_version  = current_metadata['version']
+
+  next if current_metadata['source'] == ''
+
+  # Parse the source URL in the metadata to construct something we can use to
+  # get the upstream metadata file.  This assumes github, which is true for
+  # all of our current modules.  If that stops being true, we probably will
+  # instead need to actually clone the repo into a temp directory and get the
+  # file that way.  That's cleaner but I don't want to worry about temp files.
+  source = current_metadata['source'].dup
+  source.sub!(/^git clone /, '')
+  source.sub!(/^git:/, 'https:')
+  source.sub!(/^git@github.com:/, 'https://github.com/')
+  source.sub!(/\.git$/, '')
+  source.sub!(/github\.com/, 'raw.githubusercontent.com')
+  source.sub!(/\/$/, '')
+  source = source + '/master/metadata.json'
+
+  # Download the metadata from the module's repository and use it to get the
+  # upstream module version.
+  upstream_json     = HTTParty.get(source)
+  upstream_metadata = JSON.parse(upstream_json)
+  upstream_version  = upstream_metadata['version']
+
+  next if upstream_version == current_version
+  printf("%-25s %-12s %-12s %s\n", entry, current_version, upstream_version,
+                                   current_metadata['source'])
+
+  subject = ["Upgrade puppet module #{entry}"]
+  desc    = sprintf("Puppet module %s needs upgrade from %s to %s\n\n%s",
+                    entry, current_version, upstream_version,
+                    current_metadata['source'])
+#  GithubCreateIssues.add_github_issues(@token, @repo, @label, subject, desc,
+#                                       'jonrober')
+end
