@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+#
+# Search given puppet hiera files and tell which ones are supposedly using
+# webauth for the entire site.  This will be considered a mitigating factor
+# when analyzing servers for problems.
+#
+# This does not actually work too well -- our apache configurations are just
+# too complicated.  It does do a first pass though, and that can be saved and
+# then manually updated with all of the more difficult servers.
+#
+# It should be run with a list of hiera files on the command line.
+
+require 'csv'
+
+puts ['Hostname', 'Authed site'].to_csv
+ARGV.sort.each do |fname|
+  authed = false
+  auth_optional = false
+
+  # Open a given hiera file and read through it looking for webauth and shib
+  # config lines.
+  File.open(fname, 'r') do |f|
+    f.each_line do |line|
+      if line =~ /^\s*(webauth|shibboleth): true/
+        authed = true
+      elsif line =~ /^\s*(webauth|shibboleth)_optional: 'on'/
+        auth_optional = true
+      end
+    end
+  end
+
+  # If the file had an authentication mechanism defined and didn't set it
+  # optional, then the auth should probably be for the entire site.
+  if authed == true && auth_optional == false
+    if fname =~ /([^\/]+)\.eyaml/
+      hostname = $~[1]
+      puts [hostname, '*'].to_csv
+    end
+  end
+end
