@@ -3,7 +3,7 @@
 This connects to puppetdb and gets a list of all hosts that don't have a stack
 fact.
 
-systeam-reporting/security/stacks-missing > /tmp/stacks.csv
+systeam-reporting/security/stacks-missing --csv > /tmp/stacks.csv
 
 
 # Servers with certain packages
