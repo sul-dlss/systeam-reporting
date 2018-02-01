@@ -1,4 +1,4 @@
-#!/usr/bin/ruby
+#!/opt/puppetlabs/puppet/bin/ruby
 
 # This is a simple mcollective client to call our package reporting agent and
 # save the output for each server into its own file.
