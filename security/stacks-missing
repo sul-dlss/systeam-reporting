@@ -16,12 +16,28 @@ OptionParser.new do |opts|
   end
 end.parse!
 
+contacts = {}
+contacts_fname = ARGV[0]
+if !contacts_fname.nil? && File.exist?(contacts_fname)
+  File.readlines(contacts_fname).each do |line|
+    if line =~ /^(\S+): (\S+)/
+      stack = $~[1]
+      address = $~[2]
+      contacts[stack] = address
+    end
+  end
+end
+
 # Get the servers to act on from given stack names.
-stack_hostnames = []
+stack_hostnames = {}
 client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
 response = client.request('facts', ['=', 'name', 'stack'])
-stack_hostnames << response.data.collect { |x| x['certname'] }
-stack_hostnames.flatten!
+#stack_hostnames << response.data.collect { |x| x['certname'] }
+response.data.each do |r|
+  hostname = r['certname']
+  stack = r['value']
+  stack_hostnames[hostname] = stack
+end
 
 all_hostnames = []
 response = client.request('nodes', ['~', 'certname', '.*'])
@@ -35,10 +51,25 @@ end
 
 # Actually print the report.
 all_hostnames.sort.each do |host|
-  next if stack_hostnames.include?(host)
-  if options[:csv]
-    puts [host, '*'].to_csv
+  message = ''
+  if stack_hostnames.key?(host) && !stack_hostnames[host].nil?
+    if stack_hostnames[host] == 'unknown'
+      message = "Unknown stack"
+    elsif !contacts.empty?
+      host_stack = stack_hostnames[host]
+      short_host_stack = host_stack.sub(/-(dev|stage|prod)/, '')
+      if !contacts.key?(host_stack) && !contacts.key?(short_host_stack)
+        message = "No contact mail for #{host_stack}"
+      end
+    end
   else
-    puts host
+    message = 'No stack'
+  end
+  next if message.empty?
+
+  if options[:csv]
+    puts [host, message].to_csv
+  else
+    printf("%-50s %s\n", host, message)
   end
 end
