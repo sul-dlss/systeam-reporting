@@ -1,0 +1,79 @@
+#!/usr/bin/env ruby
+
+# Go through each virtual machine to find snapshots of a specific name that
+# are older than some number of days and delete them.  This is done to clean
+# up our pre-kernel upgrade snapshots regularly, and is done as a separate
+# process because the snapshot cleanup can take a while.
+
+require 'rbvmomi'
+require 'yaml'
+
+# Use the ezmomi config since it's a nice simple yaml file.
+CONFIG_FNAME = '/etc/ezmomi/config.yml'
+
+DATACENTER = 'SUL'
+CLEAN_AFTER_DAYS = 30
+
+#######################################################################
+# Functions
+#######################################################################
+
+# Recursively go through a folder, finding any virtual machines and dipping
+# into further levels of folders, to find all virtual machines.
+def vms(folder)
+  children = []
+  folder.childEntity.each do |x|
+    name, junk = x.to_s.split('(')
+    case name
+    when "Folder"
+      children.push(vms(x))
+    when "VirtualMachine"
+      children.push(x)
+    end
+  end
+
+  children
+end
+
+# Check to see if a snapshot is a specific prekernel snapshot.  If so, and the
+# snapshot is older than a certain number of days, delete it.  Then check any
+# children this snapshot has.
+def check_snapshot(vmname, node)
+  if node.name =~ /^prekernel/
+    compare_time = Time.now - CLEAN_AFTER_DAYS * 24 * 60 * 60
+    if compare_time > node.createTime
+      puts 'Deleting snapshot for ' + vmname + ' | ' + node.name + ' | ' + node.createTime.iso8601
+
+      snapshot_task = node.snapshot.RemoveSnapshot_Task(removeChildren: false)
+      snapshot_task = snapshot_task.wait_for_completion
+    end
+  end
+
+  unless node.childSnapshotList.empty?
+    node.childSnapshotList.each { |item| check_snapshot(vmname, item) }
+  end
+end
+
+#######################################################################
+# Main program
+#######################################################################
+
+config = YAML.load_file(CONFIG_FNAME)
+
+# Connect to vmware and get our data center.
+vim = RbVmomi::VIM.connect(host: config['server'], user: config['username'],
+                           password: config['password'], insecure: true)
+dc = vim.serviceInstance.find_datacenter(DATACENTER) || fail('datacenter not found')
+
+# Get a list of all VMs.
+servers = vms(dc.vmFolder)
+servers.flatten!
+
+# Now iterate through the VMs to get all of their snapshots and clean as
+# needed.
+servers.each do |vm|
+  if vm.snapshot
+     snapshot_list = vm.snapshot.rootSnapshotList
+     snapshot_list.each { |i| check_snapshot(vm.name, i) }
+   end
+end
