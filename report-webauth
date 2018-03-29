@@ -8,6 +8,7 @@ require 'net/smtp'
 require 'optparse'
 require 'yaml'
 require 'active_support/all'
+require 'csv'
 
 EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
 
@@ -74,6 +75,35 @@ def mail_message(content)
   end
 end
 
+def hieradata (host)
+  project  = ''
+  access   = []
+  optional = 'off'
+  login    = ''
+  logout   = ''
+
+  fname = "/Users/jonrober/puppet/hieradata/node/#{host}.eyaml"
+  File.readlines(fname).each do |line|
+    if line =~ /^\s*project: '(\S+)'/
+      project = $~[1]
+    elsif line =~ /^\s*webauth_optional: 'on'/
+      optional = 'on'
+    elsif line =~ /^\s*auth_require: '(.+)'/
+      $~[1].split(' ').each do |a|
+        access.push(a)
+      end
+    elsif line =~ /^\s*webauth_login_path: '(\S+)'/
+      login = $~[1]
+    elsif line =~ /^\s*webauth_logout_path: '(\S+)'/
+      logout = $~[1]
+    end
+  end
+
+  access.uniq!
+
+  [project, access, optional, login, logout]
+end
+
 #############################################################################
 # Main routine
 #############################################################################
@@ -90,8 +120,14 @@ end.parse!
 webauth = servers_with_class('Profile::Webserver::Vhost::Webauth')
 webauth << servers_with_class('S_apache::Webauth')
 webauth.flatten!
+
+headers = ['Project', 'Host', 'Access', 'Optional', 'Login', 'Logout']
 if (options[:dryrun])
-  puts webauth.sort
+  puts headers.to_csv
+  webauth.sort.each do |host|
+    project, access, optional, login, logout = hieradata(host)
+    puts [project, host, access.sort.join("\n"), optional, login, logout].to_csv
+  end
 else
   mail_message(webauth.sort.join("\n"))
 end
