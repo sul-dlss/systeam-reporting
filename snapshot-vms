@@ -6,6 +6,5 @@ STACK_LOOKUP='/opt/app/reports/systeam-reporting/stack-servers'
 
 /usr/local/bin/k5start -qUtf /etc/keytabs/service.sul-reports.keytab
 $RVM $STACK_LOOKUP $@ | while read hostname; do
-  remctl sulcobbler ezmomi removeSnapshot --vm $hostname --name $SNAPSHOT >& /dev/null
   remctl sulcobbler ezmomi createSnapshot --vm $hostname --name $SNAPSHOT
 done
