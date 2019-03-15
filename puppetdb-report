@@ -8,6 +8,7 @@ require 'json'
 require 'httparty'
 require 'yaml'
 require 'active_support/all'
+require 'no_proxy_fix'
 
 # Default settings.
 CHECKIN_TIMEOUT = 24
