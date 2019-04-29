@@ -10,7 +10,8 @@ moduledir = 'modules'
 
 # transition - public advertised version older than current version
 # puppet_agent - public advertised version older than current version
-ignoremodules = ['dovecot', 'logrotate', 'transition', 'puppet_agent']
+# epel - we have our own version that we pretend is the main
+ignoremodules = ['dovecot', 'logrotate', 'transition', 'puppet_agent', 'epel']
 
 # Data for github issue creation.
 @repo  = 'sul-dlss/operations-tasks'
@@ -30,32 +31,29 @@ Dir.foreach(moduledir) do |entry|
   current_json     = File.read(metadata)
   current_metadata = JSON.parse(current_json)
   current_version  = current_metadata['version']
+  module_name      = current_metadata['name']
 
   next if current_metadata['source'] == ''
 
-  # Parse the source URL in the metadata to construct something we can use to
-  # get the upstream metadata file.  This assumes github, which is true for
-  # all of our current modules.  If that stops being true, we probably will
-  # instead need to actually clone the repo into a temp directory and get the
-  # file that way.  That's cleaner but I don't want to worry about temp files.
-  source = current_metadata['source'].dup
-  source.sub!(/^git clone /, '')
-  source.sub!(/^git:/, 'https:')
-  source.sub!(/^git@github.com:/, 'https://github.com/')
-  source.sub!(/\.git$/, '')
-  source.sub!(/github\.com/, 'raw.githubusercontent.com')
-  source.sub!(/\/$/, '')
-  source = source + '/master/metadata.json'
+  # Pretty up the URL that we print out, so that the git source is repackaged
+  # into the URL to look up for changes.
+  url = current_metadata['source'].dup
+  url.sub!(/^git clone /, '')
+  url.sub!(/^git:/, 'https:')
+  url.sub!(/^git@github.com:/, 'https://github.com/')
+  url.sub!(/\.git$/, '')
 
-  # Download the metadata from the module's repository and use it to get the
-  # upstream module version.
-  upstream_json     = HTTParty.get(source)
-  upstream_metadata = JSON.parse(upstream_json)
-  upstream_version  = upstream_metadata['version']
+  #
+  module_name.sub!(/^puppetlabs\//, 'puppetlabs-')
+  forge_url  = "https://forgeapi.puppetlabs.com/v3/modules/#{module_name}"
+  forge_data = HTTParty.get(forge_url)
+  #puts module_name
+  #puts forge_url
+  upstream_version = forge_data['current_release']['version']
 
   next if upstream_version == current_version
   printf("%-25s %-12s %-12s %s\n", entry, current_version, upstream_version,
-                                   current_metadata['source'])
+                                   url)
 
   subject = ["Upgrade puppet module #{entry}"]
   desc    = sprintf("Puppet module %s needs upgrade from %s to %s\n\n%s",
