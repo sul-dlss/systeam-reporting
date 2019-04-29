@@ -39,7 +39,7 @@ my $PUPPETDB_NODES     = 'http://sulpuppet4-db.stanford.edu:8080/pdb/query/v4/no
 # A list of regular expressions for hosts that we don't normally want to see
 # in our reports.  These should only be shown during quarterly reports for
 # doing a full check of all our host statuses.
-my @SKIP_HOSTS = ('^sulhp-\d+', '^SUL-');
+my @SKIP_HOSTS = ('^sulhp-\d+', 'sulvm-\d+', '^SUL-');
 my @SKIP_MODELS = ('Cyclades', 'F5 Big-IP', 'NetApp', 'tape library', 'Cisco',
                    'Hitachi HUS');
 my @SKIP_OS     = ('Windows', 'ILOM');
