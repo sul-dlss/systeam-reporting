@@ -115,9 +115,9 @@ sub find_all_vms {
         next if $line =~ m{^NetApp AltaVault};
 
         my ($host, $status, $template, $cpus, $mem)
-          = ($line =~ m{^(.+)\s+powered(\S+)\s+(\S+)\s+(\d+)\s+(\d+)});
+          = ($line =~ m{^(.+?)\s+powered(\S+)\s+(\S+)\s+(\d+)\s+(\d+)});
         next if $host =~ /\s/;
-        next if $template == 'True';
+        next if $template eq 'True';
 
         $servers{$host}{'status'} = $status;
         $servers{$host}{'template'} = $template;
