@@ -1,0 +1,530 @@
+#!/usr/bin/env python
+
+import boto3
+import botocore
+import re
+import sys
+import getopt
+from tabulate import tabulate
+
+# Defaults.
+profile = 'users-prod'
+region = 'us-west-2'
+show_all = False
+
+#######################################################################
+# Queries for AWS resources.
+#######################################################################
+
+def query_ec2():
+    # Create filter for instances in running state
+    running_filters = [
+        {
+            'Name': 'instance-state-name',
+            'Values': ['running']
+        }
+    ]
+
+    ec2 = boto3.client('ec2')
+    instances = ec2.describe_instances(Filters=running_filters)
+    output = []
+    for reservation in instances['Reservations']:
+        for instance in reservation['Instances']:
+            project   = project_tag(instance, 'Tags')
+            terraform = has_terraform_tag(instance, 'Tags')
+            name      = tag_value(instance, 'Tags', 'Name')
+            if show_line(project, terraform):
+                output.append([name, instance['InstanceId'], project, terraform])
+
+    if len(output) > 0:
+        print "EC2 Instances:"
+        print tabulate(output, headers = ['Name', 'InstanceId', 'Project', 'Terraform'])
+        print
+
+# No resource builder for ECS, so we use the client.
+def query_ecs():
+    ecs = boto3.client('ecs')
+    clusters = ecs.list_clusters()
+    output = []
+    for cluster_arn in clusters['clusterArns']:
+        cluster_details = ecs.describe_clusters(clusters=[cluster_arn],
+            include=['TAGS'])
+        services = ecs.list_services(cluster=cluster_arn)
+        cluster = cluster_details['clusters'][0]
+        project = project_tag(cluster, 'tags')
+        terraform = has_terraform_tag(cluster, 'Tags')
+
+        for service_arn in services['serviceArns']:
+            service = ecs.describe_services(cluster=cluster_arn,
+                include = ['TAGS'],
+                services = [ service_arn ] )
+
+            project = project_tag(service['services'][0], 'tags')
+            terraform = has_terraform_tag(service['services'][0], 'Tags')
+            if show_line(project, terraform):
+                clustername = cluster['clusterName']
+                servicename = service['services'][0]['serviceName']
+                output.append([clustername, servicename, project, terraform])
+
+    if len(output) > 0:
+        print "ECS Instances:"
+        print tabulate(output, headers = ['Cluster', 'Service', 'Project', 'Terraform'])
+        print
+
+# SNS topics have no tags.
+def query_sns():
+    sns = boto3.client('sns')
+    topics = sns.list_topics()
+    output = []
+    for topic in topics['Topics']:
+        topic_arn = topic['TopicArn']
+        attrs = sns.get_topic_attributes(TopicArn=topic_arn)
+        output.append([topic_arn, attrs['Attributes']['DisplayName']])
+
+    if len(output) > 0:
+        print "SNS Topics:"
+        print tabulate(output, headers = ['ARN', 'Name'])
+        print
+
+# List off S3 buckets and their tags.
+def query_s3():
+    s3 = boto3.client('s3')
+    buckets = s3.list_buckets()
+    output = []
+    for bucket in buckets['Buckets']:
+        try:
+            tags = s3.get_bucket_tagging(Bucket=bucket['Name'])
+        except botocore.exceptions.ClientError:
+            tags = []
+
+        project = project_tag(tags, 'TagSet')
+        terraform = has_terraform_tag(tags, 'TagSet')
+        if show_line(project, terraform):
+            output.append([bucket['Name'], project, terraform])
+
+    if len(output) > 0:
+        print "S3 Buckets:"
+        print tabulate(output, headers = ['Name', 'Project', 'Terraform'])
+        print
+
+# SQS queues (none currently in use).
+def query_sqs():
+    sqs = boto3.client('sqs')
+    queues = sqs.list_queues()
+    output = []
+    if 'QueueUrls' not in queues:
+        return
+    for url in queues['QueueUrls']:
+        try:
+            tags = sqs.list_queue_tags(QueueUrl=url)
+            if 'Tags' in tags:
+                output.append(url, tags['Tags'])
+        except botocore.exceptions.ClientError:
+            continue
+
+    if len(output) > 0:
+        print "SQS Queues:"
+        print tabulate(output, headers = ['Name', 'Project', 'Terraform'])
+        print
+
+# Route53: List off both tags and records.
+def query_route53():
+    route53 = boto3.client('route53')
+    zones = route53.list_hosted_zones()
+    output = []
+    for zone in zones['HostedZones']:
+
+        # Currently gives a 400 error.
+        #tags = route53.list_tags_for_resource(ResourceType='hostedzone',
+        #    ResourceId=zone['Id'])
+        #print "\t", tags['ResourceTagSet']['Tags']
+
+        # Get the records for this zone.
+        dns = route53.list_resource_record_sets(HostedZoneId=zone['Id'])
+        for record in dns['ResourceRecordSets']:
+            if record['Type'] == 'NS' or record['Type'] == 'SOA':
+                continue
+            if re.search('^_', record['Name']):
+                continue
+            output.append([zone['Name'], record['Name'], record['Type']])
+
+    if len(output) > 0:
+        print "Route53:"
+        print tabulate(output, headers = ['Zone', 'Name', 'Project', 'Terraform'])
+        print
+
+# RDS Clusters and tag names.
+def query_rds():
+    rds = boto3.client('rds')
+    instances = rds.describe_db_instances()
+    output = []
+    for instance in instances['DBInstances']:
+        instance_arn = instance['DBInstanceArn']
+        tags = rds.list_tags_for_resource(ResourceName=instance_arn)
+
+        project = project_tag(tags, 'TagList')
+        terraform = has_terraform_tag(tags, 'TagList')
+
+        # If it's in a cluster, it shows under the Neptune report, so skip here.
+        if 'DBClusterIdentifier' in instance:
+            continue
+        if show_line(project, terraform):
+            output.append([instance['DBInstanceIdentifier'], project, terraform])
+
+    if len(output) > 0:
+        print "RDS:"
+        print tabulate(output, headers = ['Instance', 'Project', 'Terraform'])
+        print
+
+# Neptune clusters and tag names.
+def query_neptune():
+    neptune = boto3.client('neptune')
+    clusters = neptune.describe_db_clusters()
+    output = []
+    for cluster in clusters['DBClusters']:
+        filters = [
+            {
+                'Name': 'db-cluster-id',
+                'Values': [ cluster['DBClusterIdentifier'] ]
+            }
+        ]
+        instances = neptune.describe_db_instances(Filters=filters)
+        for instance in instances['DBInstances']:
+            instance_arn = instance['DBInstanceArn']
+            tags = neptune.list_tags_for_resource(ResourceName=instance_arn)
+            project = project_tag(tags, 'TagList')
+            terraform = has_terraform_tag(tags, 'TagList')
+            if show_line(project, terraform):
+                output.append([cluster['DBClusterIdentifier'], instance['DBInstanceIdentifier'], project, terraform])
+
+    if len(output) > 0:
+        print "Neptune Instances:"
+        print tabulate(output, headers = ['Cluster', 'Instance', 'Project', 'Terraform'])
+        print
+
+def query_logs():
+    logs = boto3.client('logs')
+    groups = logs.describe_log_groups()
+    output = []
+    for group in groups['logGroups']:
+        tags = logs.list_tags_log_group(logGroupName=group['logGroupName'])
+        project = project_tag(tags, 'tags')
+        terraform = has_terraform_tag(tags, 'tags')
+        if show_line(project, terraform):
+            output.append([group['logGroupName'], project, terraform])
+
+    if len(output) > 0:
+        print "Cloudwatch Logs:"
+        print tabulate(output, headers = ['InstanceId', 'Project', 'Terraform'])
+        print
+
+# List all lambda functions and their tags.
+def query_lambdas():
+    lambdas = boto3.client('lambda')
+    functions = lambdas.list_functions()
+    output = []
+    for function in functions['Functions']:
+        tags = lambdas.list_tags(Resource=function['FunctionArn'])
+        project = project_tag(tags, 'Tags')
+        terraform = has_terraform_tag(tags, 'Tags')
+        if show_line(project, terraform):
+            output.append([function['FunctionName'], project, terraform])
+
+    if len(output) > 0:
+        print "Lambdas:"
+        print tabulate(output, headers = ['Name', 'Project', 'Terraform'])
+        print
+
+# List off and show resource tags for all keys.
+def query_kms():
+    kms = boto3.client('kms')
+    keys = kms.list_keys()
+    output = []
+    for key in keys['Keys']:
+        try:
+            tags = kms.list_resource_tags(KeyId=key['KeyId'])
+            project = project_tag(tags, 'Tags')
+            terraform = has_terraform_tag(tags, 'Tags')
+            if show_line(project, terraform):
+                output.append([key['KeyId'], project, terraform])
+
+        # Some keys we just don't have access to, for no reason I can find.
+        except botocore.exceptions.ClientError as err:
+            if err.response['Error']['Code'] == 'AccessDeniedException':
+                output.append([key['KeyId'], 'Access Denied', 'False'])
+            else:
+                raise
+
+    if len(output) > 0:
+        print "KMS Stores:"
+        print tabulate(output, headers = ['ID', 'Project', 'Terraform'])
+        print
+
+def query_iam():
+    iam = boto3.client('iam')
+    users = iam.list_users()
+    output = []
+    for user in users['Users']:
+        tags = iam.list_user_tags(UserName=user['UserName'])
+        project = project_tag(tags, 'Tags')
+        terraform = has_terraform_tag(tags, 'Tags')
+        if show_line(project, terraform):
+            output.append([user['UserName'], project, terraform])
+
+    if len(output) > 0:
+        print "IAM Users:"
+        print tabulate(output, headers = ['Name', 'Project', 'Terraform', 'Terraform'])
+        print
+
+def query_elb():
+    elb = boto3.client('elbv2')
+    lbs = elb.describe_load_balancers()
+    output = []
+    for lb in lbs['LoadBalancers']:
+        tags = elb.describe_tags(ResourceArns=[lb['LoadBalancerArn']])
+        project = project_tag(tags['TagDescriptions'][0], 'Tags')
+        terraform = has_terraform_tag(tags['TagDescriptions'][0], 'Tags')
+        if show_line(project, terraform):
+            output.append([lb['LoadBalancerName'], project, terraform])
+
+    if len(output) > 0:
+        print "Elastic Load Balancers:"
+        print tabulate(output, headers = ['Name', 'Project', 'Terraform'])
+        print
+
+def query_elasticache():
+    elasticache = boto3.client('elasticache')
+    clusters = elasticache.describe_cache_clusters()
+    account_id = get_account_id()
+    output = []
+    for cluster in clusters['CacheClusters']:
+        cluster_id = cluster['CacheClusterId']
+        cluster_arn = "arn:aws:elasticache:%s:%s:cluster:%s" %(region, account_id, cluster_id)
+        tags = elasticache.list_tags_for_resource(ResourceName=cluster_arn)
+        project = project_tag(tags, 'TagList')
+        terraform = has_terraform_tag(tags, 'TagList')
+        if show_line(project, terraform):
+            output.append([cluster['CacheClusterId'], project, terraform])
+
+    if len(output) > 0:
+        print "Elasticache:"
+        print tabulate(output, headers = ['ClusterID', 'Project', 'Terraform'])
+        print
+
+def query_efs():
+    efs = boto3.client('efs')
+    systems = efs.describe_file_systems()
+    output = []
+    for sys in systems['FileSystems']:
+        tags = efs.describe_tags(FileSystemId=sys['FileSystemId'])
+        project = project_tag(tags, 'Tags')
+        terraform = has_terraform_tag(tags, 'Tags')
+        if 'Name' in sys:
+            name = sys['Name']
+        else:
+            name = ''
+        if show_line(project, terraform):
+            output.append([sys['FileSystemId'], name, project, terraform])
+
+    if len(output) > 0:
+        print "EFS:"
+        print tabulate(output, headers = ['Id', 'Name', 'Project', 'Terraform'])
+        print
+
+# List ECR repositories, which have no tagging for information.  Aside from
+# repo tagging, which is completely different.
+def query_ecr():
+    ecr = boto3.client('ecr')
+    repositories = ecr.describe_repositories()
+    output = []
+    for repo in repositories['repositories']:
+        output.append([repo['repositoryName']])
+
+    if len(output) > 0:
+        print "ECR Repositories:"
+        print tabulate(output, headers = ['Name'])
+        print
+
+# Get the list of DynamoDB tables, then expand each into further info and use
+# that to look up tags.
+def query_dynamodb():
+    dynamodb = boto3.client('dynamodb')
+    tables = dynamodb.list_tables()
+    output = []
+    for table in tables['TableNames']:
+        table_info = dynamodb.describe_table(TableName=table)
+        table_arn = table_info['Table']['TableArn']
+        tags = dynamodb.list_tags_of_resource(ResourceArn=table_arn)
+        project = project_tag(tags, 'Tags')
+        terraform = has_terraform_tag(tags, 'Tags')
+        if show_line(project, terraform):
+            output.append([table, project, terraform])
+
+    if len(output) > 0:
+        print "DynamoDB:"
+        print tabulate(output, headers = ['Name', 'Project', 'Terraform'])
+        print
+
+# Pools of users for Cognito.
+def query_cognito_user_pools():
+    cognito_idp = boto3.client('cognito-idp')
+    pools = cognito_idp.list_user_pools(MaxResults=60)
+    output = []
+    for pool in pools['UserPools']:
+        pool_info = cognito_idp.describe_user_pool(UserPoolId=pool['Id'])
+        project = project_tag(pool_info['UserPool'], 'UserPoolTags')
+        terraform = has_terraform_tag(pool_info['UserPool'], 'Tags')
+        if show_line(project, terraform):
+            output.append([pool['Name'], project, terraform])
+
+    if len(output) > 0:
+        print "Cognito User Pools:"
+        print tabulate(output, headers = ['Name', 'Project', 'Terraform'])
+        print
+
+# Cloudwatch alarms have no tagging information.
+def query_cloudwatch():
+    cloudwatch = boto3.client('cloudwatch')
+    alarms = cloudwatch.describe_alarms()
+    output = []
+    for alarm in alarms['MetricAlarms']:
+        tags      = cloudwatch.list_tags_for_resource(ResourceARN=alarm['AlarmArn'])
+        project   = project_tag(tags, 'Tags')
+        terraform = has_terraform_tag(tags, 'Tags')
+        if show_line(project, terraform):
+            output.append([alarm['AlarmName'], project, terraform])
+
+    if len(output) > 0:
+        print "Cloudwatch:"
+        print tabulate(output, headers = ['Alarm', 'Project', 'Terraform'])
+        print
+
+def query_autoscaling():
+    autoscaling = boto3.client('autoscaling')
+    groups = autoscaling.describe_auto_scaling_groups()
+    output = []
+    for group in groups['AutoScalingGroups']:
+        filter = [ { 'Name': 'auto-scaling-group',
+                     'Values': [ group['AutoScalingGroupName'] ]
+                    }]
+        tags = autoscaling.describe_tags(Filters=filter)
+        project = project_tag(tags, 'Tags')
+        terraform = has_terraform_tag(tags, 'Tags')
+        if show_line(project, terraform):
+            output.append([group['AutoScalingGroupName'], project, terraform])
+
+    if len(output) > 0:
+        print "Autoscaling:"
+        print tabulate(output, headers = ['Group', 'Project', 'Terraform'])
+        print
+
+#######################################################################
+# Misc functions
+#######################################################################
+
+# Return the account ID.
+def get_account_id():
+    sts = boto3.client('sts')
+    identity = sts.get_caller_identity()
+    return identity['Account']
+
+# Given a data structure, the name of the field that holds the tags, and the
+# name of a specific tag, search for that tag.
+def tag_value(structure, tagfield, tagname):
+    if tagfield not in structure:
+        return ''
+
+    if isinstance(structure[tagfield], list):
+        for tag in structure[tagfield]:
+
+            # More data inconsistencies.  Sometimes Key, sometimes key.
+            if 'Key' in tag:
+                if tag['Key'] == tagname:
+                    return tag['Value']
+            elif 'key' in tag:
+                if tag['key'] == tagname:
+                    return tag['value']
+
+    elif isinstance(structure[tagfield], dict):
+        if tagname in structure[tagfield]:
+            return structure[tagfield][tagname]
+
+    return ''
+
+
+def has_terraform_tag(structure, tagname):
+    tag = tag_value(structure, tagname, 'terraform')
+    if tag == '':
+        return 'false'
+    return tag
+
+# Pull a project tag from a data structure, given the name of the key that
+# contains the tag data.  The tag data can be structured one of two ways:
+# * A normal dict
+# * An array of dicts, each with only two keys, 'Key' and 'Value'.
+def project_tag(structure, tagname):
+    tag = tag_value(structure, tagname, 'project')
+    if tag == '':
+        tag = '(No tag)'
+    return tag
+
+def show_line(project, terraform):
+    if show_all == True:
+        return True
+    if project == '(No tag)':
+        return True
+    if terraform == 'false':
+        return True
+    return False
+
+#######################################################################
+# Main program
+#######################################################################
+
+try:
+    opts, args = getopt.getopt(sys.argv[1:], 'ahp:', ['help', 'all', 'profile='])
+except getopt.GetoptError:
+    print 'aws-tag-query.py [-a]'
+    sys.exit(2)
+
+for opt, arg in opts:
+    if opt in ('-a', '--all'):
+        show_all = True
+    if opt in ('-p', '--profile'):
+        profile = arg
+    if opt in ('-h', '--help'):
+        print "usage: aws-report [-a] [--profile=<profile>]"
+        print "\t-a will show all resources, not only ones missing tags"
+        print "\t--profile will set your aws profile to use (users-prod by default)"
+        sys.exit(0)
+
+boto3.setup_default_session(profile_name=profile, region_name=region)
+
+query_ecs()
+query_ec2()
+query_elb()
+query_lambdas()
+
+query_neptune()
+query_rds()
+query_dynamodb()
+
+query_s3()
+
+query_logs()
+query_iam()
+query_cloudwatch()
+
+# These resources don't do tagging or aren't in use yet.
+if show_all == True:
+    query_autoscaling()
+    query_kms()
+    query_sns()
+    query_sqs()
+
+    query_elasticache()
+    query_efs()
+    query_ecr()
+
+    query_route53()
+    query_cognito_user_pools()
