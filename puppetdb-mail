@@ -12,6 +12,8 @@ require 'json'
 require 'uri'
 require 'net/http'
 
+require 'no_proxy_fix'
+
 EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
 PUPPET_STATE = '/var/lib/systems-dashboard/puppetstate.yaml'
 
@@ -20,7 +22,6 @@ PUPPET_STATE = '/var/lib/systems-dashboard/puppetstate.yaml'
   'jonrober' => 'jonrober',
   'ssklar'   => 'ssklar',
   'rsmith11' => 'rsmith11',
-  'efahy'    => 'eefahy',
   'azanella' => 'tallenaz',
   'jmorley'  => 'julianmorley',
   'kamchan'  => 'kamchan',
@@ -43,11 +44,11 @@ def opsgenie_fetch_json(url, params, req_type)
   https = Net::HTTP.new(uri.host, uri.port)
   https.use_ssl = true
   header = {
-    "Content-Type" =>"application/json",
+    "Content-Type"  => "application/json",
     "Authorization" => "GenieKey #{@opsgenie_apikey}"
   }
   begin
-    if req_type=='post'
+    if req_type == 'post'
       res = https.post(uri.path, params, initheader = header)
     else
       uri.query = params.to_json
@@ -60,6 +61,7 @@ def opsgenie_fetch_json(url, params, req_type)
       return false
     end
   rescue => e
+    puts "#{e}: #{uri.host}, #{uri.port}"
     return false
   end
 end
