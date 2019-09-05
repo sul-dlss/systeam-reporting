@@ -32,7 +32,10 @@ def request(endpoint, query = nil, payload = {})
       end
     end
 
-    response = HTTParty.get("#{path}/#{endpoint}", body: options)
+    response = HTTParty.get("#{path}/#{endpoint}",
+                            body: options,
+                            timeout: 120,
+                           )
     tmp_rsp = JSON.parse response.body
     tmp_rsp.each do |r|
       responses.push(r)
@@ -90,24 +93,42 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-fact_name = ARGV[0]
-servers = servers_with_fact(ARGV[0])
+servers = {}
+facts   = []
+ARGV.each do |fact_name|
+  facts.push(fact_name)
+  new_servers = servers_with_fact(fact_name)
+  new_servers.keys.each do |host|
+    servers[host] = {} unless servers.key?(host)
+    servers[host][fact_name] = new_servers[host]
+  end
+end
 
 output = ''
-servers.keys.sort.each { |host|
-  output <<  "%-45s %s\n" % [host, servers[host]]
-}
+servers.keys.sort.each do |host|
+  ordered = []
+  facts.each do |fact|
+    if servers[host].key?(fact)
+      fact_value = servers[host][fact]
+    else
+      fact_value = ''
+    end
+    ordered.push(fact_value)
+
+  end
+  fact_output = ordered.join ("\t")
+  output << "%s\t%s\n" % [host, fact_output]
+end
 
 # Print out the servers, either in mail or to STDOUT.
 if (options[:dryrun])
-  servers.keys.sort.each { |host|
-    puts output
-  }
+  puts output
 else
   if options[:subject]
     subject = options[:subject]
   else
-    subject = "Report for servers with fact #{fact_name}"
+    all_facts = ARGV.sort.join(',')
+    subject = "Report for servers with facts #{all_facts}"
   end
   mail_message(subject, output)
 end
