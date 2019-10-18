@@ -1,0 +1,170 @@
+#!/usr/bin/env ruby
+#
+# Generate a list of servers using a specific class, for various reporting.
+
+require 'json'
+require 'httparty'
+require 'net/smtp'
+require 'optparse'
+require 'yaml'
+require 'active_support/all'
+
+@puppetdbs = {
+  'v4' => 'http://sulpuppet4-db.stanford.edu:8080/pdb/query/v4',
+}
+
+DEFAULTS = {
+  '/dev/mapper/rootvg-tmp'   => '2G',
+  '/dev/mapper/rootvg-slash' => '5G',
+  '/dev/mapper/rootvg-var'   => '2G',
+}
+
+#############################################################################
+# PuppetDB functions
+#############################################################################
+
+def fact_request(endpoint, name, payload = {})
+  responses = []
+
+  @puppetdbs.each do |version, path|
+    response = HTTParty.get("#{path}/#{endpoint}/#{name}",
+                            timeout: 120,
+                           )
+    tmp_rsp = JSON.parse response.body
+    tmp_rsp.each do |r|
+      responses.push(r)
+    end
+  end
+
+  responses
+end
+
+#############################################################################
+# Common functions
+#############################################################################
+
+# Given the name of a class, return all hosts that use that class.
+def servers_with_fact(factname)
+  servers = {}
+  response = fact_request('facts', factname)
+  response.each do |r|
+    hostname = r['certname']
+    factname = r['value']
+    servers[hostname] = factname
+  end
+
+  servers
+end
+
+# Format the mountpoint, effectively just suppressing it to nil for those
+# records where we already have a set mountpoint that would be overridden.
+def format_mount(partition, mount)
+
+  # Partitions that we already have mounts set for.
+  return nil if partition == '/dev/mapper/rootvg-slash'
+  return nil if partition == '/dev/mapper/rootvg-var'
+  return nil if partition == '/dev/mapper/rootvg-tmp'
+
+  mount
+end
+
+# Reformat the size field from puppet fact to how the LVM puppet module
+# expects.  If the size is the same as the default for that partition, return
+# nil to signal there's no need to print this record out.
+def format_space(partition, size)
+  size.gsub!('.00 ', ' ')
+  size.gsub!(' GiB', 'G')
+
+  if (DEFAULTS.key?(partition) && DEFAULTS[partition] == size)
+    return nil
+  end
+  size
+end
+
+# Format the hostname and partition facts into something we can plug in to
+# puppet hieradata (with some checking).
+def display_host(hostname, partitions)
+  volume_groups = {}
+  lvm_members = []
+
+  puts hostname
+  partitions.keys.sort.each do |partition|
+    if partitions[partition]['filesystem'] == 'LVM2_member'
+      lvm_members << partition
+      next
+    end
+    next if partition == '/dev/mapper/rootvg-swap'
+    next if partition == '/dev/mapper/rootvg-afscache'
+    next unless partition.match(/^\/dev\/mapper\/(\S+)-(\S+)/)
+
+    vg = $~[1]
+    short_partition = $~[2]
+    volume_groups[vg] = [] unless volume_groups.key?(vg)
+    volume_groups[vg] << partition
+  end
+
+  puts "LVM partitions: " + lvm_members.sort.join(', ')
+  puts 'lvm::volume_groups:'
+  volume_groups.keys.sort.each do |vg|
+    puts "  #{vg}:"
+    puts '    logical_volumes:'
+    volume_groups[vg].sort.each do |partition|
+
+      next unless partition.match(/^\/dev\/mapper\/\S+-(\S+)/)
+      short_partition = $~[1]
+
+      # Skip the partition if it's an expected size.
+      space = format_space(partition, partitions[partition]['size'].to_s)
+      next if space.nil?
+
+      # Find if this is a known volume and set the mount to nil then, so we
+      # don't print in useless data.
+      mount = format_mount(partition, partitions[partition]['mount'].to_s)
+
+      puts '      ' + short_partition + ':'
+      puts '        ' + 'size: ' + space
+      puts '        ' + 'mount: ' + mount unless mount.nil?
+      puts '        ' + 'filesystem: ' + partitions[partition]['filesystem'].to_s unless mount.nil?
+    end
+  end
+
+  puts
+end
+
+#############################################################################
+# Main routine
+#############################################################################
+
+# Parse the options, currently --dryrun.
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: report-classes [options]"
+end.parse!
+
+servers = {}
+facts   = []
+fact_name = 'partitions'
+facts.push(fact_name)
+new_servers = servers_with_fact(fact_name)
+new_servers.keys.each do |host|
+  servers[host] = {} unless servers.key?(host)
+  servers[host][fact_name] = new_servers[host]
+end
+
+output = ''
+servers.keys.sort.each do |host|
+  ordered = []
+  facts.each do |fact|
+    if servers[host].key?(fact)
+      fact_value = servers[host][fact]
+    else
+      fact_value = ''
+    end
+    ordered.push(fact_value)
+
+  end
+  fact_output = ordered.join ("\t")
+
+  fact_hash = eval(fact_output)
+  display_host(host, fact_hash)
+end
