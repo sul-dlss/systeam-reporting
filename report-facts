@@ -19,21 +19,11 @@ EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
 # PuppetDB functions
 #############################################################################
 
-def request(endpoint, query = nil, payload = {})
+def fact_request(endpoint, name, payload = {})
   responses = []
 
   @puppetdbs.each do |version, path|
-    options = { 'query' => query.to_json }
-    payload.each do |k, v|
-      if version == 'v3'
-        options[k.to_s.sub('_', '-')] = v
-      else
-        options[k.to_s] = v
-      end
-    end
-
-    response = HTTParty.get("#{path}/#{endpoint}",
-                            body: options,
+    response = HTTParty.get("#{path}/#{endpoint}/#{name}",
                             timeout: 120,
                            )
     tmp_rsp = JSON.parse response.body
@@ -52,8 +42,7 @@ end
 # Given the name of a class, return all hosts that use that class.
 def servers_with_fact(factname)
   servers = {}
-  query = ['=', 'name', factname]
-  response = request('facts', query)
+  response = fact_request('facts', factname)
   response.each do |r|
     hostname = r['certname']
     factname = r['value']
