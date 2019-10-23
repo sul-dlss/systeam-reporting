@@ -123,8 +123,8 @@ def display_host(hostname, partitions)
 
       puts '      ' + short_partition + ':'
       puts '        ' + 'size: ' + space
-      puts '        ' + 'mount: ' + mount unless mount.nil?
-      puts '        ' + 'filesystem: ' + partitions[partition]['filesystem'].to_s unless mount.nil?
+      puts '        ' + 'mountpath: ' + mount unless mount.nil?
+      puts '        ' + 'fs_type: ' + partitions[partition]['filesystem'].to_s unless mount.nil?
     end
   end
 
