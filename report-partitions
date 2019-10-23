@@ -15,8 +15,8 @@ require 'active_support/all'
 
 DEFAULTS = {
   '/dev/mapper/rootvg-tmp'   => '2G',
-  '/dev/mapper/rootvg-slash' => '5G',
-  '/dev/mapper/rootvg-var'   => '2G',
+  '/dev/mapper/rootvg-slash' => '10G',
+  '/dev/mapper/rootvg-var'   => '20G',
 }
 
 #############################################################################
