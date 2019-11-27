@@ -28,7 +28,7 @@ our @OPTIONS = (
     ['long',       'include the hosts these packages are installed on'],
 );
 
-my $PUPPETDB_RESOURCES = 'http://sulpuppet4-db.stanford.edu:8080/pdb/query/v4/resources';
+my $PUPPETDB_RESOURCES = 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4/resources';
 
 #############################################################################
 # Misc routines

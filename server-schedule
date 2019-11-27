@@ -7,7 +7,7 @@ require 'puppetdb'
 require 'yaml'
 
 # Default settings.
-@client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
+@client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
 schedule_fname = 'modules/profile/files/reports/etc/server-reports/schedule'
 
 # Get all hostnames.

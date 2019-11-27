@@ -10,7 +10,7 @@ require 'yaml'
 require 'active_support/all'
 
 @puppetdbs = {
-  'v4' => 'http://sulpuppet4-db.stanford.edu:8080/pdb/query/v4',
+  'v4' => 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4',
 }
 
 DEFAULTS = {
