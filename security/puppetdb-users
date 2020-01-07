@@ -134,7 +134,7 @@ end.parse!
 
 # Get all user resources to act on.
 hosts = {}
-client = PuppetDB::Client.new(server: 'http://sulpuppet4-db.stanford.edu:8080')
+client = PuppetDB::Client.new(server: 'http://sulpuppet-db.stanford.edu:8080')
 response = client.request('resources', ['=', 'type', 'User'])
 response.data.each do |response|
   username = response['title']
