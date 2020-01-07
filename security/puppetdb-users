@@ -62,13 +62,18 @@ system_users = [
     'nfsnobody',
     'nrpe',
     'oracle',
+    'ossecr',
+    'polkitd',
     'puppet',
     'root',
+    'shibd',
     'splunk',
+    'stunnel',
     'sultsm10',
     'sultsm20',
     'sultsm30',
     'sultsm99',
+    'telegraf',
 ]
 
 # And known group-user accounts, where we create an account for multiple people
