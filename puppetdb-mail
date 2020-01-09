@@ -149,6 +149,11 @@ def server_assignee(server, environment)
   assignee
 end
 
+def short_hostname(server)
+  short = server.sub('.stanford.edu', '')
+  short
+end
+
 #############################################################################
 # Main routine
 #############################################################################
@@ -185,14 +190,14 @@ message << "\n"
 message << "Servers with failed puppet runs\n"
 message << "-------------------------------\n"
 failed.sort.each do |server|
-  message << server + "\n"
+  message << format("%-35s %s\n", short_hostname(server), report[server]['environment'])
 end
 message << "\n"
 
 message << "Servers without any puppet runs for over 24 hours\n"
 message << "-------------------------------------------------\n"
 quiet.keys.sort.each do |server|
-  message << format("%-45s %s\n", server, quiet[server])
+  message << format("%-35s %-25s %s\n", short_hostname(server), report[server]['environment'], quiet[server])
 end
 
 if (options[:dryrun])
