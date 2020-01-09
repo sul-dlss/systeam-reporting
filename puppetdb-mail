@@ -204,5 +204,5 @@ if (options[:dryrun])
   puts message
 else
   mail_message(message)
-  create_issues(quiet, failed, report)
+  #create_issues(quiet, failed, report)
 end
