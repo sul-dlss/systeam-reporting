@@ -16,6 +16,7 @@ require 'no_proxy_fix'
 
 EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
 PUPPET_STATE = '/var/lib/systems-dashboard/puppetstate.yaml'
+SERVER_STATE = '/var/lib/systems-dashboard/servers.yaml'
 
 # List sysadmins by sunetid mapping to github uid.
 @SYSADMINS = {
@@ -172,6 +173,7 @@ end.parse!
 quiet = {}
 tangled = []
 failed = []
+servers_all = YAML.load_file(SERVER_STATE)
 report = YAML.load_file(PUPPET_STATE)
 report.keys.each do |server|
   failed.push(server) if report[server].key?('failed')
@@ -199,6 +201,17 @@ message << "-------------------------------------------------\n"
 quiet.keys.sort.each do |server|
   message << format("%-35s %-25s %s\n", short_hostname(server), report[server]['environment'], quiet[server])
 end
+message << "\n"
+
+message << "Servers without any puppet runs in puppetdb\n"
+message << "-------------------------------------------------\n"
+servers_all.keys.sort.each do |server|
+  next if report.key?(server)
+  next unless servers_all[server].key?('vmware')
+  next if server.match(/^sul-vcenter/)
+  message << format("%s\n", short_hostname(server))
+end
+message << "\n"
 
 if (options[:dryrun])
   puts message
