@@ -209,6 +209,7 @@ servers_all.keys.sort.each do |server|
   next if report.key?(server)
   next unless servers_all[server].key?('vmware')
   next if server.match(/^sul-vcenter/)
+  next if server == 'bodoni.stanford.edu'
   message << format("%s\n", short_hostname(server))
 end
 message << "\n"
