@@ -140,7 +140,7 @@ def server_assignee(server, environment)
     return assignee if @SYSADMINS.has_key?(assignee)
   end
 
-  assignee = @default_asignee
+  assignee = @default_assignee
   @SYSADMINS.each_key do |s|
     next unless environment =~ /^#{s}/
     assignee = s
@@ -168,7 +168,8 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-@default_asignee = on_call
+#@default_assignee = on_call
+@default_assignee = 'jonrober@stanford.edu'
 
 quiet = {}
 tangled = []
