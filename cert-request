@@ -2,22 +2,69 @@
 
 # Script to help automate making certificate requests by creating the csr and
 # key without prompting, then adding them to vault.
+#
+# Requires at least one hostname, which will have .stanford.edu appended to it
+# if it does not already have that.  Any additional hostnames will be treated
+# as alternate names to the first in creating the ssl request.
+
+# Quit on any errors.
+set -e
 
 if [[ ! $1 ]]; then
-  echo "usage: cert-request <hostname>"
+  echo "usage: cert-request <hostname> [alternatename] ... [alternatename]"
   exit 1
 fi
 
 # Get the hostname and append .stanford.edu if no domain is given.
 HOSTNAME=$1
+shift
 if [[ $HOSTNAME != *.* ]]; then
   HOSTNAME="${HOSTNAME}.stanford.edu"
 fi
 
+# Prepend DNS: to all of the san arguments and join them together.  Add
+# .stanford.edu if no domain in any.
+a=()
+for i in "$@"
+do
+  if [[ $i != *.* ]]; then
+    a+=("DNS:$i.stanford.edu")
+  else
+    a+=("DNS:$i")
+  fi
+done
+SAN=$(IFS=, ; echo "${a[*]}")
+
 mkdir -p certs
 
+# Subject line containing our given hostname as the common name.
 SUBJECT="/C=US/ST=California/L=Stanford/O=Stanford University/OU=Libraries/CN=${HOSTNAME}/emailAddress=sul-webmaster@lists.stanford.edu"
-openssl req -new -nodes -newkey rsa:2048 -keyout certs/${HOSTNAME}.key -out certs/${HOSTNAME}.csr -config data/openssl.cnf -batch -subj "${SUBJECT}"
 
+echo $SAN
+if [[ -n $SAN ]]; then
+
+  # If we had subject alternate names given, we do an ugly bit to add those to
+  # the end of the openssl.cnf file.  There are cleaner ways to do this with
+  # an environment variable, but the OS X version of openssl doesn't seem to
+  # support.
+  openssl req -new -nodes -newkey rsa:2048 -batch \
+      -keyout certs/${HOSTNAME}.key \
+      -subj "${SUBJECT}" \
+      -reqexts SAN \
+      -config <(cat data/openssl.cnf \
+          <(printf "\n[SAN]\nsubjectAltName=$SAN")) \
+      -out certs/${HOSTNAME}.csr
+else
+
+  # Otherwise, simple request that only needs the subject given.
+  openssl req -new -nodes -newkey rsa:2048 -batch \
+      -keyout certs/${HOSTNAME}.key \
+      -subj "${SUBJECT}" \
+      -config data/openssl.cnf
+      -out certs/${HOSTNAME}.csr
+fi
+
+# Put both the key and request into a -pending vault variable so that we don't
+# clobber any existing keys while the request is in process.
 vault write puppet/${HOSTNAME}/ssl-key-pending content=@certs/${HOSTNAME}.key
 vault write puppet/${HOSTNAME}/ssl-csr-pending content=@certs/${HOSTNAME}.csr
