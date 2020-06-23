@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Script to help automate making certificate requests by creating the csr and
+# key without prompting, then adding them to vault.
+
+if [[ ! $1 ]]; then
+  echo "usage: cert-request <hostname>"
+  exit 1
+fi
+
+# Get the hostname and append .stanford.edu if no domain is given.
+HOSTNAME=$1
+if [[ $HOSTNAME != *.* ]]; then
+  HOSTNAME="${HOSTNAME}.stanford.edu"
+fi
+
+mkdir -p certs
+
+SUBJECT="/C=US/ST=California/L=Stanford/O=Stanford University/OU=Libraries/CN=${HOSTNAME}/emailAddress=sul-webmaster@lists.stanford.edu"
+openssl req -new -nodes -newkey rsa:2048 -keyout certs/${HOSTNAME}.key -out certs/${HOSTNAME}.csr -config data/openssl.cnf -batch -subj "${SUBJECT}"
+
+vault write puppet/${HOSTNAME}/ssl-key-pending content=@certs/${HOSTNAME}.key
+vault write puppet/${HOSTNAME}/ssl-csr-pending content=@certs/${HOSTNAME}.csr
