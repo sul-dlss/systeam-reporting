@@ -27,6 +27,10 @@ fi
 a=()
 for i in "$@"
 do
+  if [[ -e $i ]] ; then
+    echo "$i is a filename!  Did you mean to run cert-approve instead?"
+    exit 1
+  fi
   if [[ $i != *.* ]]; then
     a+=("DNS:$i.stanford.edu")
   else
@@ -60,11 +64,11 @@ else
   openssl req -new -nodes -newkey rsa:2048 -batch \
       -keyout certs/${HOSTNAME}.key \
       -subj "${SUBJECT}" \
-      -config data/openssl.cnf
+      -config data/openssl.cnf \
       -out certs/${HOSTNAME}.csr
 fi
 
 # Put both the key and request into a -pending vault variable so that we don't
 # clobber any existing keys while the request is in process.
-vault write puppet/${HOSTNAME}/ssl-key-pending content=@certs/${HOSTNAME}.key
-vault write puppet/${HOSTNAME}/ssl-csr-pending content=@certs/${HOSTNAME}.csr
+vault kv put puppet/${HOSTNAME}/ssl-key-pending content=@certs/${HOSTNAME}.key
+vault kv put puppet/${HOSTNAME}/ssl-csr-pending content=@certs/${HOSTNAME}.csr

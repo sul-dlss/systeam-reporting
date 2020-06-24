@@ -13,7 +13,13 @@ HOSTNAME=$1
 if [[ $HOSTNAME != *.* ]]; then
     HOSTNAME="${HOSTNAME}.stanford.edu"
 fi
+
+# Exit if the given certfile does not exist.
 CERTFILE=$2
+if [[ ! -s $CERTFILE ]]; then
+    echo "$CERTFILE does not exist"
+    exit 1
+fi
 
 mkdir -p certs
 
@@ -22,17 +28,17 @@ mkdir -p certs
 # non-pending.  In the latter, we only want to update the cert.  Either way,
 # only exit on failures after we've tried to read the pending files, since we
 # don't want to stop the script if they're not there.
-vault read -field content puppet/${HOSTNAME}/ssl-key-pending > certs/${HOSTNAME}.key
-vault read -field content puppet/${HOSTNAME}/ssl-csr-pending > certs/${HOSTNAME}.csr
+vault kv get -field content puppet/${HOSTNAME}/ssl-key-pending > certs/${HOSTNAME}.key
+vault kv get -field content puppet/${HOSTNAME}/ssl-csr-pending > certs/${HOSTNAME}.csr
 set -e
 if [[ -e certs/${HOSTNAME}.key && -s certs/${HOSTNAME}.key && -e certs/${HOSTNAME}.csr && -s certs/${HOSTNAME}.csr ]]; then
-    vault write puppet/${HOSTNAME}/ssl-key content=@certs/${HOSTNAME}.key
-    vault write puppet/${HOSTNAME}/ssl-csr content=@certs/${HOSTNAME}.csr
+    vault kv put puppet/${HOSTNAME}/ssl-key content=@certs/${HOSTNAME}.key
+    vault kv put puppet/${HOSTNAME}/ssl-csr content=@certs/${HOSTNAME}.csr
 
     # Now that we've successfully copied, delete the pending records.
-    vault delete puppet/${HOSTNAME}/ssl-key-pending
-    vault delete puppet/${HOSTNAME}/ssl-csr-pending
+    vault kv delete puppet/${HOSTNAME}/ssl-key-pending
+    vault kv delete puppet/${HOSTNAME}/ssl-csr-pending
 fi
 
 # Finally update the cert in vault.
-vault write puppet/${HOSTNAME}/ssl-cert content=@${CERTFILE}
+vault kv put puppet/${HOSTNAME}/ssl-cert content=@"${CERTFILE}"
