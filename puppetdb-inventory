@@ -1,0 +1,108 @@
+#!/usr/bin/env ruby
+#
+# Generate a CSV inventory report that can be pasted into ISO's Google
+# spreadsheet.
+
+require 'json'
+require 'httparty'
+require 'active_support/all'
+require 'no_proxy_fix'
+
+# Default settings.
+FACTS = %w(ipaddress minsec_level stack operatingsystem operatingsystemrelease).freeze
+
+@puppetdbs = {
+  'v4' => 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4',
+}
+
+#############################################################################
+# PuppetDB functions
+#############################################################################
+
+def request(endpoint, query = nil, payload = {})
+  responses = []
+
+  @puppetdbs.each do |version, path|
+    options = { 'query' => query.to_json }
+    payload.each do |k, v|
+      if version == 'v3'
+        options[k.to_s.sub('_', '-')] = v
+      else
+        options[k.to_s] = v
+      end
+    end
+
+    response = HTTParty.get("#{path}/#{endpoint}", body: options)
+    tmp_rsp = JSON.parse response.body
+    tmp_rsp.each do |r|
+      responses.push(r)
+    end
+  end
+
+  responses
+end
+
+#############################################################################
+# Common functions
+#############################################################################
+
+def fact_value(fact_name)
+  facts = {}
+  response = request('facts', ['=', 'name', fact_name])
+  response.each do |r|
+    hostname = r['certname']
+    facts[hostname] = r['value']
+  end
+
+  facts
+end
+
+# Do a query for all nodes and the basic node data (checkins, failures, etc).
+def node_data
+  hosts = {}
+  response = request('nodes', ['~', ['fact', 'fqdn'], '^.*$'])
+  response.each do |r|
+    hostname = r['certname'] || r['name']
+    hosts[hostname] = r
+  end
+
+  hosts
+end
+
+#############################################################################
+# Main routine
+#############################################################################
+
+report = {}
+
+hosts = node_data
+hosts.keys.each do |hostname|
+  report[hostname] = {}
+end
+
+# Go through each fact we want to search for and then add those values to the
+# hosts.
+FACTS.each do |fact|
+  fact_values = fact_value(fact)
+  fact_values.each_key do |hostname|
+    next unless report.key?(hostname)
+    report[hostname][fact] = fact_values[hostname]
+  end
+end
+
+csv_string = CSV.generate do |csv|
+  report.keys.sort.each do |hostname|
+    values = [hostname]
+    FACTS.each do |fact|
+      if report[hostname].key?(fact)
+        fact_value = report[hostname][fact]
+      else
+        fact_value = ''
+      end
+      values.push(fact_value)
+    end
+
+    csv << values
+  end
+end
+puts csv_string
