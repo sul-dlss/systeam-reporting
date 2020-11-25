@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+
+require 'net/smtp'
+require 'open3'
+
+EMAIL_TO = 'rsmith11@stanford.edu'.freeze
+
+# Given a message, send it out as an email.
+def mail_message(message)
+    Net::SMTP.start('localhost') do |smtp|
+      smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
+    end
+end
+
+tfchanges = []
+tffailed = []
+
+Dir.glob("/home/terraform/terraform/hosts/*.tf") {|tffile|
+
+File.open(tffile) do |f|
+    f.each_line do |line|
+      if line =~ /^module/
+        tfmodule = line.gsub!(/"/, '').gsub!(/\s+/,'').gsub(/\{|\}/, '').insert(6,'.')
+	output, error, status = Open3.capture3("terraform plan --detailed-exitcode --target=#{tfmodule}")
+        if status.exitstatus == 2
+            tfchanges.push(tfmodule)
+        end
+        if status.exitstatus == 1
+            tffailed.push(tfmodule)
+        end
+      end
+      if line =~ /^resource/
+        tfmodule = line.gsub!(/"/, '').gsub!(/\{|\}/, '').strip.gsub!(/\s+/,'.')
+	output, error, status = Open3.capture3("terraform plan --detailed-exitcode --target=#{tfmodule}")
+        if status.exitstatus == 2
+            tfchanges.push(tfmodule)
+        end
+        if status.exitstatus == 1
+            tffailed.push(tfmodule)
+        end
+      end
+    end
+end
+}
+
+message = ''
+message << "From: Do Not Reply <nobody@stanford.edu>\n"
+message << "To: #{EMAIL_TO}\n"
+message << "Subject: Terraform hosts that are having problems\n"
+message << "\n"
+
+message << "Hosts with Terraform proposed changes\n"
+message << "-------------------------------\n"
+tfchanges.sort.each do |server|
+  message << server
+end
+message << "\n"
+
+message << "Hosts with Terraform errors\n"
+message << "-------------------------------------------------\n"
+tffailed.sort.each do |server|
+  message << server
+end
+message << "\n"
+
+mail_message(message)
+
