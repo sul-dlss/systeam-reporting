@@ -3,7 +3,7 @@
 # server-status - Get a list of all our VMs and important statuses
 #
 # Written by Jon Robertson <jonrober@stanford.edu>
-# Copyright 2015
+# Copyright 2020
 #     The Board of Trustees of the Leland Stanford Junior University
 
 #############################################################################
@@ -42,7 +42,7 @@ my $PUPPETDB_NODES     = 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4/nod
 my @SKIP_HOSTS = ('^sulhp-\d+', 'sulvm-\d+', '^SUL-');
 my @SKIP_MODELS = ('Cyclades', 'F5 Big-IP', 'NetApp', 'tape library', 'Cisco',
                    'Hitachi HUS');
-my @SKIP_OS     = ('Windows', 'ILOM');
+my @SKIP_OS     = ('ILOM');
 
 #############################################################################
 # Email functions
