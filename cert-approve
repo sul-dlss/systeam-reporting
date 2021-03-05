@@ -4,7 +4,7 @@
 # approved cert.
 
 if [[ ! $1 || ! $2 ]]; then
-    echo "usage: cert-approve <hostname> <certfile>"
+    echo "usage: cert-approve <hostname> <certfile> <pem>"
     exit 1
 fi
 
@@ -42,3 +42,12 @@ fi
 
 # Finally update the cert in vault.
 vault kv put puppet/${HOSTNAME}/ssl-cert content=@"${CERTFILE}"
+
+# If pfx is set, then create pfx certs for Windows servers
+if [[ -n $3 && $3 == 'pem' ]]; then
+    openssl pkcs7 -print_certs -in ${CERTFILE} -out certs/${HOSTNAME}.pem
+    vault kv put puppet/${HOSTNAME}/ssl-pem content=@certs/${HOSTNAME}.pem
+    # we'll do this on the server now.  keeping here for historical reading of how to do it with openssl command line
+    #openssl pkcs12 -export -in certs/${HOSTNAME}.pem  -inkey certs/${HOSTNAME}.key -out certs/${HOSTNAME}.pfx -passout pass:
+    #vault kv put puppet/${HOSTNAME}/ssl-pfx content=@certs/${HOSTNAME}.pfx
+fi
