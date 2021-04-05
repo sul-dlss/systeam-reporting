@@ -1,0 +1,349 @@
+#!/usr/bin/perl
+#
+# orcid-lookup - Check Directory for users with orcids set.
+#
+# Written by Jon Robertson <jonrober@stanford.edu>
+# Copyright 2021
+#     The Board of Trustees of the Leland Stanford Junior University
+
+#############################################################################
+# Modules and declarations
+#############################################################################
+
+use 5.010;
+use autodie;
+use strict;
+use warnings;
+
+use vars qw($DIR);
+
+use Stanford::Directory;
+use Getopt::Long::Descriptive;
+use IO::Handle;
+
+# Our option descriptions, for both defining options and their usage.
+our @OPTIONS = (
+    ['help|h',       'print usage (this text) and exit'],
+    ['manual|man',   'print perldoc and exit'],
+    ['affiliations', 'show all affiliations'],
+    ['departments',  'show departments for the users'],
+    ['test',         'run with just one known test case'],
+    ['debug',        'print out debugging info'],
+);
+
+#############################################################################
+# Misc routines
+#############################################################################
+
+# Strip the starting university and the ending role from a sugwaffiliation
+# code to just give a department.
+sub format_departments {
+    my ($entry) = @_;
+
+    return undef unless $entry->{sugwaffiliation};
+
+    my ($department) = @{ $entry->{sugwaffiliation} };
+    $department =~ s#^University\|##;
+    $department =~ s#\|[^|]+$##;
+
+    return $department;
+}
+
+# Given an LDAP entry, process it to find the data we want from each hit.
+sub process_match {
+    my ($entry, $displayname, $results) = @_;
+
+    # Get the UID, if any.  Some users don't seem to have one set, though
+    # not sure why.  If none, just shrug and use the displayname.
+    my $uid;
+    if (exists $entry->{uid}) {
+        ($uid) = @{ $entry->{uid} };
+    } else {
+        $uid = $displayname;
+    }
+
+    # If we already had a match for the user with a suorcid, don't do any
+    # further processing.
+    return if exists $results->{has_orcid}{$uid};
+    $results->{categories}{total}++;
+
+    if (exists $entry->{suaffiliation}) {
+        my $current = 0;
+        my $found_postdoc = 0;
+        my %affils = map { $_ => 1 } @{ $entry->{suaffiliation} };
+
+        # See if we have a postdoc.  If so, they're only current if they have
+        # no non-active student affiliations as well.
+        if ($affils{'stanford:student:postdoc'}) {
+            unless ($affils{'stanford:student:recent'}
+                    || $affils{'stanford::student::nonactive'}
+                    || $affils{'stanford::student::onleave'}) {
+                $current = 1;
+            }
+            $found_postdoc = 1;
+            $results->{categories}{postdoc}++;
+        }
+
+        # Now check for faculty/staff/student, which can both overlap and also
+        # have different suffixes.  But for students, only count the person if
+        # they weren't also a postdoc.
+        for my $affil (keys %affils) {
+            $results->{affiliations}{$affil}++;
+            next if $affil =~ /:recent$/;
+            next if $affil =~ /:nonactive$/;
+            next if $affil =~ /:onleave$/;
+
+            if ($affil =~ /^stanford:faculty/) {
+                $results->{categories}{faculty}++;
+                $current = 1;
+            } elsif ($affil =~ /^stanford:staff/) {
+                $results->{categories}{staff}++;
+                $current = 1;
+            } elsif (!$found_postdoc && $affil =~ /^stanford:student/) {
+                $results->{categories}{student}++;
+                $current = 1;
+            }
+        }
+
+        # Mark as departed Stanford or current, and save the department.
+        if ($current) {
+            $results->{categories}{current}++;
+            my $position = format_departments($entry);
+            $results->{departments}{$position}++ if defined($position);
+        } else {
+            $results->{categories}{departed}++;
+        }
+
+    } else {
+          # There weren't any affiliations found -- we'll just default to
+          # considering this a person who departed.
+          $results->{categories}{departed}++;
+    }
+}
+
+#############################################################################
+# Main routines
+#############################################################################
+
+# Get errors and output in the same order.
+STDOUT->autoflush;
+
+# Clean up the path name.
+my $fullpath = $0;
+$0 =~ s{ ^ .* / }{}xms;
+
+# Parse command-line options.
+my ($options, $usage) = describe_options("$0 %o <args>", @OPTIONS);
+if ($options->manual) {
+    print("Feeding myself to perldoc, please wait....\n");
+    exec 'perldoc', '-t', $fullpath;
+} elsif ($options->help) {
+    print_stdout($usage->text);
+    exit 0;
+}
+
+$DIR = new Stanford::Directory;
+$DIR->set (ldap_server => "ldap.stanford.edu",
+           mechanism   => "GSSAPI",
+           basedn      => "cn=people,dc=stanford,dc=edu");
+
+my %results;
+
+# Save the duplicate and unmatched search entries for debugging.
+my (@duplicates, @unmatched);
+
+my %categories;
+for my $c ('matched', 'suorcids', 'unmatched', 'dupes', 'departed', 'current',
+           'faculty', 'postdoc', 'student', 'staff') {
+    $results{categories}{$c} = 0;
+}
+
+# Directly check for any entries that already have a sunetid filled in.
+my $orc_query = "suorcid=*";
+my @entries = $DIR->ldap_query($orc_query);
+print "suorcid matches: ", scalar(@entries), "\n" if $options->debug;
+for my $entry (@entries) {
+    my $uid;
+    if (exists $entry->{uid}) {
+        ($uid) = @{ $entry->{uid} };
+    } else {
+        $uid = @{ $entry->{cn} };
+    }
+
+    print "$uid\n" if $options->debug;
+    process_match($entry, $uid, \%results);
+    $results{categories}{suorcids}++;
+    $results{has_orcid}{$uid} = 1;
+}
+
+print "\nFile lookups:\n" if $options->debug;
+
+# Go through the ORCID-given file and try to find all users mentioned within.
+while (my $line = <>) {
+    chomp $line;
+    my ($orcid, $signup, $displayname, $schooling, $postschooling, undef,
+        $emails, @rest) = split(/,/, $line);
+    next unless $displayname;
+
+    # Match against just one known user in order to do a fast test of the
+    # search itself.
+    if ($options->test) {
+        next unless lc($displayname) eq 'john cioffi';
+    }
+
+    # Search on either email address or displayname if none is given.
+    my ($query);
+    if (defined $emails && $emails =~ /\b(\S+\@stanford.edu)/) {
+        $query = "(|(cn=$displayname)(mail=$1))"
+    } else {
+        $query = "cn=$displayname"
+    }
+    #$query = "suorcid=*"
+
+    # Do the lookup, with some debugging to help us figure if there are any
+    # slowdowns.
+    print $query, "\n" if $options->debug;
+    my @entries = $DIR->ldap_query($query);
+    print scalar(@entries), "\n" if $options->debug;
+
+    if (scalar @entries == 0) {
+        $results{categories}{unmatched}++;
+        push(@unmatched, $displayname);
+    } elsif (scalar @entries > 1) {
+        $results{categories}{dupes}++;
+        push(@duplicates, $displayname);
+    } else {
+        my ($entry) = @entries;
+        $results{categories}{matched}++;
+        process_match($entry, $displayname, \%results);
+    }
+}
+
+$DIR->close_directory;
+
+# Output labels.
+my %labels = (total     => 'Total people',
+              suorcids  => 'Found via suOrcID',
+              matched   => 'Matched from CSV file',
+              unmatched => 'Not found in LDAP from CSV file',
+              dupes     => 'More than one Stanford person found with this name',
+              current   => 'Currently at Stanford',
+              departed  => 'No longer at Stanford',
+              postdoc   => 'Postdoc student',
+              student   => 'Student (non-postdoc)',
+              staff     => 'Staff',
+              faculty   => 'Faculty',
+              );
+
+# And now report all of the juicy facts we've requested.
+for my $category ('total', 'suorcids', 'matched', 'unmatched', 'dupes') {
+    printf "%6i: %s\n", $results{categories}{$category}, $labels{$category};
+}
+
+print "\n";
+for my $category ('current', 'departed') {
+    printf "%6i: %s\n", $results{categories}{$category}, $labels{$category};
+}
+
+print "\n";
+for my $category ('postdoc', 'student', 'faculty', 'staff') {
+    printf "%6i: %s\n", $results{categories}{$category}, $labels{$category};
+}
+
+if ($options->departments) {
+    print "\n";
+    for my $department (sort keys %{ $results{departments} }) {
+        printf "%6i: %s\n", $results{departments}{$department}, $department;
+    }
+}
+
+if ($options->affiliations) {
+    print "\n";
+    for my $affil (sort keys %{ $results{affiliations} }) {
+        print $affil, "\n";
+    }
+}
+
+exit 0;
+
+__END__
+
+##############################################################################
+# Documentation
+##############################################################################
+
+=head1 NAME
+
+orcid-lookup - Check Directory for users with orcids set
+
+=head1 SYNOPSIS
+
+B<orcid-lookup> [B<-h>] [B<--manual>] [B<--departments>] [B<--affiliations>] [B<--test>] [B<--debug>]
+
+=head1 DESCRIPTION
+
+This uses directory lookups and an ORCID export file to determine the number
+and classification of Stanford users with an ORCID.  The categories and output
+are requested by Tom and for his purposes.
+
+Background: ORCID is an external identifier for giving people a unique id to
+use in research documents.  It has some use at Stanford and UIT has added an
+LDAP entry that can record it, along with a website to link the external ID to
+a user.  That's our best canonical source.
+
+However, ORCID themselves can give us an export of all users who have their
+email set to @stanford.edu, or list Stanford as part of their college or
+employment history.  The downside is that the report treats email address as
+private by default, so only a small number of users in the export have that
+data set for us to match on.  For everyone else, we have to hope and try to do
+a name match.  In many cases this fails, or we get multiple potential Stanford
+users with that name.
+
+So in the long term, we want the number of people with suORCIDs that are found
+by the directory to get closer and closer ot the number of people found in the
+export, so that this can just be retired.  That's part of a separate push and
+isn't our job, though.  Neither is generating the export.
+
+It is meant to be run from dlss-ubuntu-tools, for the Stanford::Directory
+package being more available on Ubuntu.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h>, B<--help>
+
+Prints a short command summary for the script.
+
+=item B<--manual>, B<--man>
+
+Prints the perldoc information (this document) for the script.
+
+=item [B<--departments>]
+
+Display a list of departments with ORCID users and the count of the users
+in each.  This takes a few pages so is off by default but wanted for Tom's
+final report.
+
+=item [B<--affiliations>]
+
+For debugging, display all affiliations we've found.  This is just useful for
+making sure there's no surprising cases that we're not handling in the code.
+
+=item [B<--test>]
+
+Skip all users in the export file but one (set in the code), used for spot
+debugging.
+
+=item [B<--debug>]
+
+Debug output, printing out lots of details about each search and how many
+results it returned.
+
+=back
+
+=head1 AUTHORS
+
+Jon Robertson <jonrober@stanford.edu>
+
+=cut
