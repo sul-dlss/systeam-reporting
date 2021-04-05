@@ -1,0 +1,256 @@
+#!/usr/bin/env ruby
+
+#######################################################################
+# Configuration
+#######################################################################
+
+require 'remctl'
+require 'vault'
+require 'openssl'
+require 'json'
+
+REMCTL_SERVER = 'lemon-uat1.stanford.edu'.freeze
+VAULT_SERVER  = 'https://vault.sul.stanford.edu/'.freeze
+VAULT_PATH    = 'puppet/'
+
+GROUP         = 'Libraries'
+CONTACT_EMAIL = 'sul-webmaster@lists.stanford.edu'
+
+USAGE = <<'_EOU'
+  cert-remctl submit <hostname> [san] [san]
+  cert-remctl approve <hostname>
+_EOU
+
+#######################################################################
+# Class overrides
+#######################################################################
+
+# Extra string classes.
+class String
+
+  # unique string matching
+  def match_abbrev(*args)
+    matches = args.select { |a| a.index(self) == 0 }
+    return matches.length == 1 ? matches.shift : nil
+  end
+
+  def fully_qualify(domain='stanford.edu')
+    # return the string unmolested if it's a fully quallified name, IP address, or HW address
+    return self if self =~ /[.:]/ or self =~ /^([0-9a-f]{12}|[0-9a-f]{2}(-[0-9a-f]{2}){5})$/i
+    return self + '.' + domain
+  end
+
+end
+
+#######################################################################
+# Misc
+#######################################################################
+
+def usage(status=0)
+  print USAGE
+  exit status
+end
+
+def openssl_key()
+  OpenSSL::PKey::RSA.new(2048)
+end
+
+def openssl_csr(key, hostname, sans)
+  request = OpenSSL::X509::Request.new
+  request.version = 0
+  request.subject = OpenSSL::X509::Name.new([
+    ['C',             'US',                  OpenSSL::ASN1::PRINTABLESTRING],
+    ['ST',            'California',          OpenSSL::ASN1::PRINTABLESTRING],
+    ['L',             'Stanford',            OpenSSL::ASN1::PRINTABLESTRING],
+    ['O',             'Stanford University', OpenSSL::ASN1::UTF8STRING],
+    ['OU',            GROUP,                 OpenSSL::ASN1::UTF8STRING],
+    ['CN',            hostname,              OpenSSL::ASN1::UTF8STRING],
+    ['emailAddress',  CONTACT_EMAIL,         OpenSSL::ASN1::UTF8STRING]
+  ])
+  request.public_key = key.public_key
+
+  # If subject alt names were requested, set up the extensions for that.
+  unless sans.empty?
+
+    # Format the hosts up in the format needed.
+    san_list = sans.map { |san_host| "DNS:#{san_host.fully_qualify}" }
+    extensions = [
+      OpenSSL::X509::ExtensionFactory.new.create_extension('subjectAltName', san_list.join(','))
+    ]
+
+    # Add to required attributes for the request.
+    attribute_values = OpenSSL::ASN1::Set [OpenSSL::ASN1::Sequence(extensions)]
+    [
+      OpenSSL::X509::Attribute.new('extReq', attribute_values),
+      OpenSSL::X509::Attribute.new('msExtReq', attribute_values)
+    ].each do |attribute|
+      request.add_attribute attribute
+    end
+  end
+
+  request.sign(key, OpenSSL::Digest::SHA1.new)
+end
+
+def json_request(csr, sans)
+
+  request = {
+    'csr'           => csr,
+    'contact_email' => CONTACT_EMAIL,
+    'server_type'   => 'Apache/ModSSL',
+    'duration'      => '1',
+    'sans'          => sans,
+  }
+
+  request.to_json
+end
+
+#######################################################################
+# Misc
+#######################################################################
+
+def vault_read(hostname, secret_name)
+  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  Vault.with_retries(Vault::HTTPConnectionError) do
+    secret = Vault.logical.read(path)
+    if secret.nil?
+      return ''
+    else
+      return secret.data[:content]
+    end
+  end
+end
+
+def vault_write(hostname, secret_name, content)
+  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  Vault.with_retries(Vault::HTTPConnectionError) do
+    Vault.logical.write(path, content: content)
+  end
+end
+
+def approval(hostname)
+  id = vault_read(hostname, 'ssl-id-pending')
+  id.sub!(/^db id: /i, '')
+
+  command = %w(certreq show)
+  command.append(id)
+  result = Remctl.remctl(REMCTL_SERVER, *command)
+  if result.stderr != ""
+    raise "stderr: #{result.stderr}"
+  end
+  if result.stdout.empty?
+    raise "no output from remctl command, exiting"
+  end
+
+  # Parse out submit id from the remctl output and save into vault for later.
+  result.stdout =~ /certificate id:\s+(\d+)/i
+  if $~.nil?
+    return nil
+  end
+  $~[1]
+end
+
+#######################################################################
+# Commands
+#######################################################################
+
+def do_submit(hostname, sans=[])
+  Dir.mkdir('certs') unless File.directory?('certs')
+
+  # Generate pending key and csr, then save into vault for later.
+  pending_key = openssl_key()
+  pending_csr = openssl_csr(pending_key, hostname, sans)
+  if pending_key.nil? or pending_csr.nil?
+    abort("could not generate key or csr")
+  end
+  vault_write(hostname, 'ssl-key-pending', pending_key)
+  vault_write(hostname, 'ssl-csr-pending', pending_csr)
+
+  # Create a json document to hand to remctl.
+  request = json_request(pending_csr, sans)
+  File.write("certs/#{hostname}.csr", pending_csr)
+  File.write("certs/#{hostname}.key", pending_key)
+
+  # Send the request to remctl.
+  command = %w(certreq submit)
+  command.append(request)
+  result = Remctl.remctl(REMCTL_SERVER, *command)
+  if result.stderr != ""
+    raise "stderr: #{result.stderr}"
+  end
+  if result.stdout.empty?
+    raise "no output from remctl command, exiting"
+  end
+
+  # Parse out submit id from the remctl output and save into vault for later.
+  puts result.stdout
+  result.stdout =~ /DB id: (\d+)/i
+  if $~.nil?
+    abort("could not find database id from stdout:\n#{result.stdout}")
+  end
+  id = $~[1]
+  vault_write(hostname, 'ssl-id-pending', id)
+end
+
+def do_approve(hostname)
+  Dir.mkdir('certs') unless File.directory?('certs')
+
+  # Use the request id to then get the certificate approval id, if done.
+  cert_id = approval(hostname)
+  if cert_id.nil?
+    abort("certificate is not yet approved")
+  end
+
+  # We might be renewing an existing cert request or approving a new one.  In
+  # the latter case, we've saved two -pending records that we want to move to
+  # non-pending.  In the latter, we only want to update the cert.  Either way,
+  # only exit on failures after we've tried to read the pending files, since we
+  # don't want to stop the script if they're not there.
+  key = vault_read(hostname, 'ssl-key-pending')
+  csr = vault_read(hostname, 'ssl-csr-pending')
+
+  # Now actually contact remctl to get the approved certificate.
+  command = %w(certs show-cert)
+  command.append(cert_id)
+  result = Remctl.remctl(REMCTL_SERVER, *command)
+  if result.stderr != ""
+    raise "stderr: #{result.stderr}"
+  end
+  if result.stdout.empty?
+    raise "no output from remctl command, exiting"
+  end
+  cert = result.stdout
+
+  # Followup from above, only move the pending csr and key into place if they
+  # existed.
+  unless key.empty? and csr.empty?
+    vault_write(hostname, 'ssl-key', key)
+    vault_write(hostname, 'ssl-csr', csr)
+    vault_delete(hostname, 'ssl-key-pending')
+    vault_delete(hostname, 'ssl-csr-pending')
+  end
+
+  vault_write(hostname, 'ssl-cert', cert)
+
+end
+
+#######################################################################
+# Main program
+#######################################################################
+
+Vault.address = VAULT_SERVER
+
+# Match command, exiting if none found.
+input = ARGV.shift
+usage unless input
+command = input.downcase.match_abbrev('submit', 'approve')
+raise "unknown command \"#{input}\"" unless command
+
+# Get the host to act on, and fully qualify the name if needed before passing
+# along.
+host = ARGV.shift
+if command == 'submit'
+  sans = ARGV
+  do_submit(host.fully_qualify, sans)
+elsif command == 'approve'
+  do_approve(host.fully_qualify)
+end
