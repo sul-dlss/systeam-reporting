@@ -1,0 +1,38 @@
+#!/usr/bin/perl
+
+# Given a number of jobs to split things up into, and a file listing a number
+# of hosts, split up the hostnames into several remctl commands to run puppet
+# in noop mode.  These can then be run via the shell.
+
+use strict;
+
+my ($iterations, $fname, $environment) = @ARGV;
+die "usage: puppet-test <iterations> <fname> <environment>\n" unless $iterations && $fname && $environment;
+
+# Open $iterations number of files for output.
+my @output;
+for my $i (0 .. $iterations - 1) {
+  my $out_fname = $fname . '.' . $i . '.sh';
+  open ($output[$i], '>', $out_fname);
+  print "Created $out_fname\n";
+}
+
+# Now go through the file of hostnames and toss each server off into one of the
+# iteration files in order.
+open (my $fh, '<', $fname);
+while (my $server = <$fh>) {
+  chomp $server;
+  $server =~ s#\.stanford\.edu\s*$##;
+
+  my $i = $. % $iterations;
+  my $out_fh = $output[$i];
+  print $out_fh "echo ### Running for $server\n";
+  print $out_fh "remctl $server puppet --test --environment $environment --noop | puppet-filter\n";
+  print $out_fh "echo ### Finished run for $server\n";
+}
+close $fh;
+
+# Close all the specific files.
+for my $i (0 .. $iterations - 1) {
+  close $output[$i];
+}
