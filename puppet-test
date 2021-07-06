@@ -26,9 +26,9 @@ while (my $server = <$fh>) {
 
   my $i = $. % $iterations;
   my $out_fh = $output[$i];
-  print $out_fh "echo ### Running for $server\n";
+  print $out_fh "echo === Running for $server\n";
   print $out_fh "remctl $server puppet --test --environment $environment --noop | puppet-filter\n";
-  print $out_fh "echo ### Finished run for $server\n";
+  print $out_fh "echo === Finished run for $server\n";
 }
 close $fh;
 

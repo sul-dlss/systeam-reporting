@@ -1,0 +1,70 @@
+#!/usr/bin/env ruby
+#
+# Generate a list of EL servers with yum updates pending for a specific package
+
+require 'json'
+require 'httparty'
+require 'optparse'
+require 'yaml'
+require 'active_support/all'
+
+@puppetdbs = {
+  'v4' => 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4',
+}
+
+#############################################################################
+# PuppetDB functions
+#############################################################################
+
+def fact_request(endpoint, name, payload = {})
+  responses = []
+
+  @puppetdbs.each do |version, path|
+    response = HTTParty.get("#{path}/#{endpoint}/#{name}",
+                            timeout: 120,
+                           )
+    tmp_rsp = JSON.parse response.body
+    tmp_rsp.each do |r|
+      responses.push(r)
+    end
+  end
+
+  responses
+end
+
+#############################################################################
+# Common functions
+#############################################################################
+
+# Given the name of a class, return all hosts that use that class.
+def servers_with_fact(factname)
+  servers = {}
+  response = fact_request('facts', factname)
+  response.each do |r|
+    hostname = r['certname']
+    factname = r['value']
+    servers[hostname] = factname
+  end
+
+  servers
+end
+
+#############################################################################
+# Main routine
+#############################################################################
+
+# Parse the options, currently --dryrun.
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: report-packages <package>"
+end.parse!
+
+package = ARGV[0]
+fact = 'yum_package_updates'
+servers = servers_with_fact(fact)
+
+output = ''
+servers.keys.sort.each do |host|
+  next unless servers[host].include?("#{package}.noarch") or servers[host].include?("#{package}.x86_64")
+  puts host
+end
