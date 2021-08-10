@@ -1,0 +1,269 @@
+#!/usr/bin/python3
+
+##############################################################
+# This script handles requesing and approving SSL certificates.
+# It does a NetDB lookup through the NetDB API to lookup any
+# host aliases associated with the servername.
+
+# How to create key and csr request:
+# ssl-cert-host hostname request
+
+# The script will then create a certs directory in the current working
+# directory, and create hostname.key and hostname.csr files.  It uses
+# the same NetDB API token as the other implementations, and does a 
+# lookup on that hostname to see if there are aliases assigned to it.
+# If there are, then it adds it to the CSR.  
+
+# How to approve certificate
+# ssl-cert-host hostname approve --crt_file <path to cert file>
+
+# Once the certificate has been approved and downloaded to your local
+# system, run the above command with the --crt_file set to the path
+# to the cert file.  
+
+# How to override NetDB lookup and manually set SANs
+# ssl-cert-host hostname override --sans host1,host2,host3
+
+# If you want to don't want to do a NetDB lookup and manually set
+# aliases, you can use the override action and then --sans option to 
+# list the SANs.  MUST BE A COMMA-SEPARATED LIST WITH NO SPACES!
+
+# This script utilizes the Vault python module to both get the NetDB
+# API token password out of Vault, and to write the keys, csr, and crt
+# files to Vault.
+##############################################################
+
+##############################################################
+# How to install
+
+# Python virtual environments should be used to keep different
+# environments free from other imported modules
+
+# Python 3
+# $ python3 -m venv env_ssl-cert-host
+# $ source env_ssl-cert-host/bin/activate
+# $ pip3 install -r requirements.txt
+# $ chmod +x ssl-cert-host
+##############################################################
+
+from logging import critical
+from re import X, search, split
+from cryptography.x509.extensions import SubjectAlternativeName
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes
+import requests, json
+import sys
+import subprocess
+import argparse
+import hvac
+import os
+
+# main function 
+# gathers user input and then passes that to other functions depending 
+# on action taken, either request, approve, or override
+def main():
+    my_parser = argparse.ArgumentParser(description='Takes a hostname and looks up all aliases in NetDB, then creates key csr with all aliases included and adds to Vault; also writes approved cert file to Vault')
+
+    # Add the arguments
+    my_parser.add_argument('HostName',
+                        metavar='host_name',
+                        type=str,
+                        help='the hostname of the server to lookup'),
+    my_parser.add_argument('action',
+                            metavar='action',
+                            choices=['request','approve','override'],
+                            help='options are either "request","approve", or "override"'),
+    my_parser.add_argument('--crt_file',
+                            metavar='crt_file',
+                            type=str,
+                            help='path to the downloaded crt file'),
+    my_parser.add_argument('--sans',
+                            metavar='sans',
+                            type=str,
+                            help='comma separated list (NO SPACES) of aliases to include; used with override action')
+
+    # Execute parse_args()
+    args = my_parser.parse_args()
+
+    # make sure hostname is set to FQDN
+    if '.' not in args.HostName:
+        hostname = args.HostName + '.stanford.edu'
+    else:
+        hostname = args.HostName
+
+    # key file
+    key_file_path = cert_dir_path + hostname + ".key"
+    # csr file
+    csr_file_path = cert_dir_path + hostname + ".csr"
+    
+    # if 'request' then call the createSSL function to create
+    # the ssl key and csr, and then store those in vault.
+    if args.action == 'request':
+        createSSL(hostname,args.action,key_file_path,csr_file_path)
+        putVaultkeys(hostname,args.action,key_file_path,csr_file_path)
+
+    # if 'override' then pass the comma-separated list to the 
+    # createSSL function.  Does a quick check to verify
+    # that the SANs list is included
+    if args.action == 'override':
+        if args.sans:
+            createSSL(hostname,args.action,key_file_path,csr_file_path,args.sans)
+            putVaultkeys(hostname,args.action,key_file_path,csr_file_path)
+        else:
+            print('ERROR:  When using "override" you must include a comma separated list of aliases, with no spaces.')
+            sys.exit()
+
+    # if 'approve' then put the cert file in vault and remove
+    # the pending vault keys.  Does a quick check to verify
+    # that the file path to cert is included
+    if args.action == 'approve':
+        if args.crt_file:
+            putVaultkeys(hostname,args.action,key_file_path,csr_file_path,args.crt_file)
+        else:
+            print('ERROR:  To approve you must include --crt_file path to the downloaded cert file.')
+            sys.exit()
+    
+# getNetDBTokenPwd function
+# function that looks in Vault to get NetDB API token information
+def getNetDBTokenPwd():
+    
+    result = client.secrets.kv.v1.read_secret(mount_point='puppet', path='littlered.stanford.edu/netdb-token')
+    json_content = json.loads(result['data']['content'])
+    client_id = json_content["client_id"]
+    client_secret = json_content["client_secret"]
+    scope = json_content["scope"]
+    grant_type = json_content["grant_type"]
+    data = {
+        "grant_type": grant_type,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scope": scope
+    }
+    return data
+
+# netDBLookup function
+# this function takes the token data from the getNetDBTokenPwd
+# function and then does the lookup.  Returns json data of the 
+# node
+def netDBLookup(host_lookup):
+    # first call the getNetDBTokenPwd() to get data
+    token_data = getNetDBTokenPwd()
+    
+    auth_url = "https://authz.itlab.stanford.edu/token"
+    auth_response = requests.post(auth_url, data=token_data)
+
+    # Read token from auth response
+    auth_response_json = auth_response.json()
+    auth_token = auth_response_json["access_token"]
+
+    auth_token_header_value = "Bearer %s" % auth_token
+
+    auth_token_header = {"Authorization": auth_token_header_value}
+
+    get_node = requests.get(netdb_url + "/nodes/" + host_lookup, headers=auth_token_header)
+
+    node_json = get_node.json()
+    return node_json
+
+# createSSL function
+# takes either the json output from the netDBLookup function 
+# or the sans list from the overide and creates the key and csr from it
+def createSSL(hostname,action,key_file,csr_file,addl_sans=None):
+    host_aliases = []
+
+    if action == 'request':
+        # first call the netDBLookup() to get json output 
+        netdb_json = netDBLookup(hostname)
+           # parse through netdb json output to see if there are
+        # aliases associated with the node.  If so, add SANs to 
+        # the csr
+        for k in netdb_json['names']:
+            if k['name'] == hostname:
+                if 'aliases' in k:
+                    for addl_names in k['aliases']:
+                        host_aliases += [x509.DNSName(addl_names)]
+            else:
+                print(hostname + " is an alias for " + k['name'] + ".  Please rerun with the hostname " + k['name'])
+                sys.exit()
+
+    if action == 'override':
+        san_list = addl_sans.split(",")
+        for san_name in san_list:
+            if '.' not in san_name:
+                san_fqdn = san_name + '.stanford.edu'
+            else:
+                san_fqdn = san_name
+            host_aliases += [x509.DNSName(san_fqdn)]
+
+    key = rsa.generate_private_key(public_exponent=65537,key_size=2048)
+
+    # write key to file
+    with open (key_file,"wb") as f:
+        f.write(key.private_bytes(encoding=serialization.Encoding.PEM,format=serialization.PrivateFormat.TraditionalOpenSSL,encryption_algorithm=serialization.NoEncryption()))
+
+    print('SSL key file ' + key_file + ' created')
+
+    req = x509.CertificateSigningRequestBuilder().subject_name(x509.Name([x509.NameAttribute(x509.NameOID.COUNTRY_NAME,"US"),x509.NameAttribute(x509.NameOID.STATE_OR_PROVINCE_NAME,"California"),x509.NameAttribute(x509.NameOID.LOCALITY_NAME,"Stanford"),x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME,"Stanford University"),x509.NameAttribute(x509.NameOID.ORGANIZATIONAL_UNIT_NAME,"Libraries"),x509.NameAttribute(x509.NameOID.EMAIL_ADDRESS,"sul-webmaster@lists.stanford.edu"),x509.NameAttribute(x509.NameOID.COMMON_NAME,hostname)]))
+
+    if host_aliases:
+        req = req.add_extension(x509.SubjectAlternativeName(host_aliases),critical=False)
+
+    csr_sign = req.sign(key,hashes.SHA256())
+
+    # write csr to file
+    with open (csr_file,'wb') as c:
+        c.write(csr_sign.public_bytes(serialization.Encoding.PEM))
+
+    print('SSL csr file ' + csr_file + ' created')
+
+# putVaultkeys function
+# takes keys, csr and cert files and add them to Vault.
+def putVaultkeys(hostname,action,key=None,csr=None,crt=None):
+    if action == 'request' or action == 'override':
+        vault_key_secret = { 'content': open(key,"r").read()}
+        client.secrets.kv.v1.create_or_update_secret(mount_point='puppet', path=hostname + '/ssl-key-pending',secret=vault_key_secret)
+        print('New Vault key written to puppet/' + hostname + '/ssl-key-pending')
+        vault_csr_secret = { 'content': open(csr,"r").read()}
+        client.secrets.kv.v1.create_or_update_secret(mount_point='puppet', path=hostname + '/ssl-csr-pending',secret=vault_csr_secret)
+        print('New Vault csr written to puppet/' + hostname + '/ssl-csr-pending')
+    if action == 'approve':
+        if os.path.isfile(crt):
+            # redownload pending key and csr and save to file 
+            vault_key_result = client.secrets.kv.v1.read_secret(mount_point='puppet', path=hostname + '/ssl-key-pending')
+            with open (key,"w") as k:
+                k.write(vault_key_result['data']['content'])
+            vault_key_secret = { 'content': open(key,"r").read()}
+            client.secrets.kv.v1.create_or_update_secret(mount_point='puppet', path=hostname + '/ssl-key',secret=vault_key_secret)
+            print('New Vault key at puppet/' + hostname + '/ssl-key')
+            client.secrets.kv.v1.delete_secret(mount_point='puppet', path=hostname + '/ssl-key-pending')
+            print('Deleted pending key at puppet/' + hostname + '/ssl-key-pending')
+            vault_csr_result = client.secrets.kv.v1.read_secret(mount_point='puppet', path=hostname + '/ssl-csr-pending')
+            with open (csr,"w") as c:
+                c.write(vault_csr_result['data']['content'])
+            vault_csr_secret = { 'content': open(csr,"r").read()}
+            client.secrets.kv.v1.create_or_update_secret(mount_point='puppet', path=hostname + '/ssl-csr',secret=vault_csr_secret)
+            print('New Vault csr at puppet/' + hostname + '/ssl-csr')
+            client.secrets.kv.v1.delete_secret(mount_point='puppet', path=hostname + '/ssl-csr-pending')
+            print('Deleted pending csr at puppet/' + hostname + '/ssl-csr-pending')
+            vault_crt_secret = { 'content': open(crt,"r").read()}
+            client.secrets.kv.v1.create_or_update_secret(mount_point='puppet', path=hostname + '/ssl-cert',secret=vault_crt_secret)
+            print('New Vault cert at puppet/' + hostname + '/ssl-cert')
+        else:
+            print("Could not find " + crt + ".  Exiting")
+            sys.exit()
+
+if __name__ == "__main__":
+    # get cwd
+    cwd = os.getcwd()
+    # path to look for certs/keys/csrs
+    cert_dir_path = cwd + '/certs/'
+    # make certs dir in case it doesn't exist in working directory
+    if not os.path.exists(cert_dir_path):
+        os.makedirs(cert_dir_path)
+    # initialize Vault module and set url path
+    client = hvac.Client(url='https://vault.sul.stanford.edu')
+    # NetDB API url
+    netdb_url = 'https://netdb-api.stanford.edu'
+    main()
