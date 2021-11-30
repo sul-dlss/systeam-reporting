@@ -18,6 +18,7 @@ VAULT_PATH    = 'puppet/'
 VAULT_TOKEN   = '/etc/vault.token'
 
 NETDB_SERVER  = 'netdb-api.stanford.edu'
+$skip_netdb   = false
 
 GROUP         = 'Libraries'
 CONTACT_EMAIL = 'sul-webmaster@lists.stanford.edu'
@@ -220,7 +221,7 @@ def do_submit(hostname, sans=[])
   Dir.mkdir('certs') unless File.directory?('certs')
 
   # Get any aliases for the hostname from netdb to add to the alternate names.
-  unless SKIP_NETDB == true
+  unless $skip_netdb == true
     netdb_aliases = get_aliases(hostname)
     if !netdb_aliases.empty?
       sans = (sans + netdb_aliases).uniq
@@ -310,10 +311,9 @@ end
 # Main program
 #######################################################################
 
-SKIP_NETDB = false
 OptionParser.new do |opts|
   opts.banner = "Usage: cert-remctl <approve|submit> <hostname>"
-  opts.on('--skip-netdb', 'Skip netdb alias lookup') { |v| SKIP_NETDB = v }
+  opts.on('--skip-netdb', 'Skip netdb alias lookup') { |v| $skip_netdb = v }
 end.parse!
 
 Vault.address = VAULT_SERVER
