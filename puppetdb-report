@@ -239,7 +239,7 @@ recent.sort.each do |hostname|
   report[hostname]['tangled'] = 1 if tangled?(hostname)
 end
 
-environments = fact_value('environment')
+environments = fact_value('agent_specified_environment')
 environments.each_key do |hostname|
   next unless report.key?(hostname)
   report[hostname]['environment'] = environments[hostname]

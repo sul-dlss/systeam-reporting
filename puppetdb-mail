@@ -215,6 +215,15 @@ servers_all.keys.sort.each do |server|
 end
 message << "\n"
 
+message << "Servers on non-production environments\n"
+message << "-------------------------------------------------\n"
+report.keys.sort.each do |server|
+  next unless report[server].key?('environment')
+  next if report[server]['environment'] == 'production'
+  message << format("%-35s %s\n", short_hostname(server), report[server]['environment'])
+end
+message << "\n"
+
 if (options[:dryrun])
   puts message
 else

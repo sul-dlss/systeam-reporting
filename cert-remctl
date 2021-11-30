@@ -5,19 +5,26 @@
 #######################################################################
 
 require 'remctl'
+require 'filelock'
 require 'vault'
 require 'openssl'
 require 'json'
+require 'httparty'
+require 'optparse'
 
-REMCTL_SERVER = 'lemon-uat1.stanford.edu'.freeze
+REMCTL_SERVER = 'lemon1.stanford.edu'.freeze
 VAULT_SERVER  = 'https://vault.sul.stanford.edu/'.freeze
 VAULT_PATH    = 'puppet/'
+VAULT_TOKEN   = '/etc/vault.token'
+
+NETDB_SERVER  = 'netdb-api.stanford.edu'
+$skip_netdb   = false
 
 GROUP         = 'Libraries'
 CONTACT_EMAIL = 'sul-webmaster@lists.stanford.edu'
 
 USAGE = <<'_EOU'
-  cert-remctl submit <hostname> [san] [san]
+  cert-remctl submit <hostname> [san] [san] [--skip-netdb]
   cert-remctl approve <hostname>
 _EOU
 
@@ -40,6 +47,53 @@ class String
     return self + '.' + domain
   end
 
+end
+
+#######################################################################
+# NetDB functions
+#######################################################################
+
+# Get a login token from the oauth2 endpoint.  There are ruby libraries that
+# exist for this, but the main one (oauth2) had problems with some specific
+# settings on authz.itlab.stanford.edu.
+def get_token
+  token_data = vault_read('littlered.stanford.edu', 'netdb-token')
+  credentials = JSON.parse(token_data)
+  encoded  = Base64.urlsafe_encode64("#{credentials['client_id']}:#{credentials['client_secret']}")
+  headers  = { Authorization: "Basic #{encoded}" }
+  query    = { grant_type: credentials['grant_type'] }
+  response = HTTParty.post(credentials['token_endpoint'],
+                           :headers => headers,
+                           :query   => query
+  )
+  raise "Bad response to getting token: #{response.body}" if response.code != 200
+
+  response_json = JSON.parse(response.body)
+  response_json['access_token']
+end
+
+# Look up a node by hostname and return all aliases for that node.
+def get_aliases(hostname)
+  headers  = { Authorization: "Bearer #{@token}", 'Content-Type': 'application/json' }
+  response = HTTParty.get("https://#{NETDB_SERVER}/nodes/#{hostname.fully_qualify}",
+                          :headers => headers)
+  if response.code != 200
+    raise "no node found for #{hostname}"
+  end
+
+  # Parse through the response to find any aliases, and make sure that this is
+  # the main hostname.
+  node_json = JSON.parse(response.body)
+  aliases = []
+  node_json['names'].each do |n|
+    if n['name'] != hostname
+      raise "#{hostname} is an alias for #{n['name']}. Please rerun with hostname #{n['name']}."
+    elsif n.key?('aliases')
+      aliases = (aliases + n['aliases'])
+    end
+  end
+
+  aliases
 end
 
 #######################################################################
@@ -104,29 +158,6 @@ def json_request(csr, sans)
   request.to_json
 end
 
-#######################################################################
-# Misc
-#######################################################################
-
-def vault_read(hostname, secret_name)
-  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
-  Vault.with_retries(Vault::HTTPConnectionError) do
-    secret = Vault.logical.read(path)
-    if secret.nil?
-      return ''
-    else
-      return secret.data[:content]
-    end
-  end
-end
-
-def vault_write(hostname, secret_name, content)
-  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
-  Vault.with_retries(Vault::HTTPConnectionError) do
-    Vault.logical.write(path, content: content)
-  end
-end
-
 def approval(hostname)
   id = vault_read(hostname, 'ssl-id-pending')
   id.sub!(/^db id: /i, '')
@@ -150,15 +181,57 @@ def approval(hostname)
 end
 
 #######################################################################
+# Vault
+#######################################################################
+
+def vault_read(hostname, secret_name)
+  puts "Reading #{secret_name}"
+  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  Vault.with_retries(Vault::HTTPConnectionError) do
+    secret = Vault.logical.read(path)
+    if secret.nil?
+      return ''
+    else
+      return secret.data[:content]
+    end
+  end
+end
+
+def vault_write(hostname, secret_name, content)
+  puts "Writing #{secret_name}"
+  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  Vault.with_retries(Vault::HTTPConnectionError) do
+    Vault.logical.write(path, content: content)
+  end
+end
+
+def vault_delete(hostname, secret_name)
+  puts "Deleting #{secret_name}"
+  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  Vault.with_retries(Vault::HTTPConnectionError) do
+    Vault.logical.delete(path)
+  end
+end
+
+#######################################################################
 # Commands
 #######################################################################
 
 def do_submit(hostname, sans=[])
   Dir.mkdir('certs') unless File.directory?('certs')
 
+  # Get any aliases for the hostname from netdb to add to the alternate names.
+  unless $skip_netdb == true
+    netdb_aliases = get_aliases(hostname)
+    if !netdb_aliases.empty?
+      sans = (sans + netdb_aliases).uniq
+    end
+  end
+
   # Generate pending key and csr, then save into vault for later.
   pending_key = openssl_key()
   pending_csr = openssl_csr(pending_key, hostname, sans)
+
   if pending_key.nil? or pending_csr.nil?
     abort("could not generate key or csr")
   end
@@ -167,6 +240,7 @@ def do_submit(hostname, sans=[])
 
   # Create a json document to hand to remctl.
   request = json_request(pending_csr, sans)
+
   File.write("certs/#{hostname}.csr", pending_csr)
   File.write("certs/#{hostname}.key", pending_key)
 
@@ -237,7 +311,13 @@ end
 # Main program
 #######################################################################
 
+OptionParser.new do |opts|
+  opts.banner = "Usage: cert-remctl <approve|submit> <hostname>"
+  opts.on('--skip-netdb', 'Skip netdb alias lookup') { |v| $skip_netdb = v }
+end.parse!
+
 Vault.address = VAULT_SERVER
+Vault.token   = File.read(VAULT_TOKEN).chomp
 
 # Match command, exiting if none found.
 input = ARGV.shift
@@ -250,7 +330,12 @@ raise "unknown command \"#{input}\"" unless command
 host = ARGV.shift
 if command == 'submit'
   sans = ARGV
-  do_submit(host.fully_qualify, sans)
+
+  Filelock '/tmp/cert-remctl.lock', :timeout => 300 do
+    @token = get_token
+    do_submit(host.fully_qualify, sans)
+  end
+
 elsif command == 'approve'
   do_approve(host.fully_qualify)
 end

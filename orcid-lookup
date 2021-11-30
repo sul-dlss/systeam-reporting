@@ -181,9 +181,17 @@ print "\nFile lookups:\n" if $options->debug;
 # Go through the ORCID-given file and try to find all users mentioned within.
 while (my $line = <>) {
     chomp $line;
-    my ($orcid, $signup, $displayname, $schooling, $postschooling, undef,
-        $emails, @rest) = split(/,/, $line);
+    next if $line =~ /^orcidid,name/;
+
+#    Most recent dumpfile has fewer fields than our first.  Just commenting out
+#    the full field list in case we get the old style again later.  New doesn't
+#    include emails for instance, which might be fixed.
+#    my ($orcid, $signup, $displayname, $schooling, $postschooling, undef,
+#        $emails, @rest) = split(/,/, $line);
+#    next unless $displayname;
+    my ($orcid, $displayname) = split(/,/, $line);
     next unless $displayname;
+    my $emails = '';
 
     # Match against just one known user in order to do a fast test of the
     # search itself.
