@@ -26,6 +26,7 @@ CONTACT_EMAIL = 'sul-webmaster@lists.stanford.edu'
 USAGE = <<'_EOU'
   cert-remctl submit <hostname> [san] [san] [--skip-netdb]
   cert-remctl approve <hostname>
+  cert-remctl mass-approve
 _EOU
 
 #######################################################################
@@ -213,6 +214,12 @@ def vault_delete(hostname, secret_name)
   end
 end
 
+def vault_list(path)
+  Vault.with_retries(Vault::HTTPConnectionError) do
+    items = Vault.logical.list(path)
+  end
+end
+
 #######################################################################
 # Commands
 #######################################################################
@@ -265,6 +272,9 @@ def do_submit(hostname, sans=[])
   vault_write(hostname, 'ssl-id-pending', id)
 end
 
+# Approve a single certificate that's already gone through the process and
+# been approved by the SSL provider.  This means getting the approved cert and
+# saving it to puppet along with updating the pending entries.
 def do_approve(hostname)
   Dir.mkdir('certs') unless File.directory?('certs')
 
@@ -304,6 +314,41 @@ def do_approve(hostname)
   end
 
   vault_write(hostname, 'ssl-cert', cert)
+  vault_delete(hostname, 'ssl-id-pending')
+
+end
+
+# Find all pending certificates and then check each to see if it's already been
+# approved.
+def do_mass_approve ()
+
+  # Get the list of hosts with pending certificates, by searching vault for
+  # servers with an ssl-id-pending.
+  pending_hosts = []
+  servers = vault_list(VAULT_PATH)
+  servers.sort.each do |host|
+    host.tr!('/', '')
+    next if host == 'common'
+    next if host == 'database'
+    next if host == 'databases'
+
+    host_keys = vault_list("#{VAULT_PATH}#{host}")
+    if host_keys.include?('ssl-id-pending')
+      pending_hosts.push(host)
+    end
+  end
+
+  # Go through the list.  Catch since we normally raise an error when the
+  # certificate isn't yet ready, and just print out the message.
+  pending_hosts.sort.each do |host|
+    puts "Approving #{host}:"
+    begin
+      do_approve(host)
+    rescue => e
+      puts e.message
+    end
+    puts
+  end
 
 end
 
@@ -312,7 +357,7 @@ end
 #######################################################################
 
 OptionParser.new do |opts|
-  opts.banner = "Usage: cert-remctl <approve|submit> <hostname>"
+  opts.banner = "Usage: cert-remctl <approve|mass-approve|submit> <hostname>"
   opts.on('--skip-netdb', 'Skip netdb alias lookup') { |v| $skip_netdb = v }
 end.parse!
 
@@ -322,7 +367,7 @@ Vault.token   = File.read(VAULT_TOKEN).chomp
 # Match command, exiting if none found.
 input = ARGV.shift
 usage unless input
-command = input.downcase.match_abbrev('submit', 'approve')
+command = input.downcase.match_abbrev('submit', 'approve', 'mass-approve')
 raise "unknown command \"#{input}\"" unless command
 
 # Get the host to act on, and fully qualify the name if needed before passing
@@ -336,6 +381,8 @@ if command == 'submit'
     do_submit(host.fully_qualify, sans)
   end
 
+elsif command == 'mass-approve'
+  do_mass_approve()
 elsif command == 'approve'
   do_approve(host.fully_qualify)
 end
