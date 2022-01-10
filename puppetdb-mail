@@ -3,7 +3,7 @@
 # Use the already created puppet node state yaml file to send out a mailing
 # about each server failed, quiet, or tangled.
 
-require 'github_create_issues'
+#require 'github_create_issues'
 require 'optparse'
 require 'net/smtp'
 require 'yaml'
@@ -32,7 +32,7 @@ SERVER_STATE = '/var/lib/systems-dashboard/servers.yaml'
 # Data for github issue creation.
 @repo  = 'sul-dlss/operations-tasks'
 @label = 'puppet-notreporting'
-@token = File.open('/etc/tokens/github-oauth-token', 'rb').read
+#@token = File.open('/etc/tokens/github-oauth-token', 'rb').read
 @desc = 'Please check to make sure that puppet is running, enabled, and against a good branch.'
 
 #############################################################################
