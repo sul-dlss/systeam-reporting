@@ -5,7 +5,6 @@
 #######################################################################
 
 require 'remctl'
-require 'filelock'
 require 'vault'
 require 'openssl'
 require 'json'
@@ -375,12 +374,8 @@ raise "unknown command \"#{input}\"" unless command
 host = ARGV.shift
 if command == 'submit'
   sans = ARGV
-
-  Filelock '/tmp/cert-remctl.lock', :timeout => 300 do
-    @token = get_token
-    do_submit(host.fully_qualify, sans)
-  end
-
+  @token = get_token
+  do_submit(host.fully_qualify, sans)
 elsif command == 'mass-approve'
   do_mass_approve()
 elsif command == 'approve'
