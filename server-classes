@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+#
+# Show a list of all classes used by one or more servers.
+
+require 'json'
+require 'httparty'
+require 'net/smtp'
+require 'optparse'
+require 'yaml'
+require 'active_support/all'
+
+EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
+
+@puppetdbs = {
+  'v4' => 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4',
+}
+
+# Extra string classes.
+class String
+
+  def fully_qualify(domain='stanford.edu')
+    # return the string unmolested if it's a fully quallified name, IP address, or HW address
+    return self if self =~ /[.:]/ or self =~ /^([0-9a-f]{12}|[0-9a-f]{2}(-[0-9a-f]{2}){5})$/i
+    return self + '.' + domain
+  end
+
+end
+
+#############################################################################
+# PuppetDB functions
+#############################################################################
+
+def request(endpoint, query = nil, payload = {})
+  responses = []
+
+  @puppetdbs.each do |version, path|
+    options = { 'query' => query.to_json }
+    payload.each do |k, v|
+      if version == 'v3'
+        options[k.to_s.sub('_', '-')] = v
+      else
+        options[k.to_s] = v
+      end
+    end
+
+    response = HTTParty.get("#{path}/#{endpoint}", body: options)
+    tmp_rsp = JSON.parse response.body
+    tmp_rsp.each do |r|
+      responses.push(r)
+    end
+  end
+
+  responses
+end
+
+#############################################################################
+# Common functions
+#############################################################################
+
+# Given a servername, return all classes for that server.
+def server_classes(server)
+  classes = []
+  query = ['and', ['=', 'type', 'Class'], ['=', 'certname', server.fully_qualify]]
+  response = request('resources', query)
+  response.each do |r|
+    classes << r['title'].downcase
+  end
+
+  classes
+end
+
+# Given a message, send it out as an email.
+def mail_message(subject, content)
+  message = ''
+  message << "From: Do Not Reply <nobody@stanford.edu>\n"
+  message << "To: #{EMAIL_TO}\n"
+  message << "Subject: #{subject}\n"
+  message << "\n"
+  message << content
+
+  Net::SMTP.start('localhost') do |smtp|
+    smtp.send_message message, 'nobody@stanford.edu', EMAIL_TO
+  end
+end
+
+#############################################################################
+# Main routine
+#############################################################################
+
+# Parse the options, currently --dryrun.
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: report-classes [options]"
+  opts.on('-d', '--dryrun', 'Do not send mail') do
+    options[:dryrun] = true
+  end
+  opts.on('-s=SUBJECT', '--subject=SUBJECT', 'Subject for mail') do |s|
+    options[:subject] = s
+  end
+end.parse!
+
+# Profile::Webserver::Vhost::webauth
+# S_apache::Webauth
+
+# Using each command line argument as a server hostname, go through and find
+# all classes that they own
+classes = []
+ARGV.each do |server|
+  classes << server_classes(server)
+end
+
+# Print out the servers, either in mail or to STDOUT.
+classes.flatten!
+if (options[:dryrun])
+  puts classes.uniq.sort
+else
+  if options[:subject]
+    subject = options[:subject]
+  else
+    subject = "Report for classes used by " + ARGV.sort.join(', ')
+  end
+  mail_message(subject, classes.uniq.sort.join("\n"))
+end
