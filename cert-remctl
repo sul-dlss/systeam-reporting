@@ -13,7 +13,7 @@ require 'optparse'
 
 REMCTL_SERVER = 'lemon1.stanford.edu'.freeze
 VAULT_SERVER  = 'https://vault.sul.stanford.edu/'.freeze
-VAULT_PATH    = 'puppet/'
+VAULT_PATH    = 'puppet/data/'
 VAULT_TOKEN   = '/etc/vault.token'
 
 NETDB_SERVER  = 'netdb-api.stanford.edu'
@@ -192,7 +192,7 @@ def vault_read(hostname, secret_name)
     if secret.nil?
       return ''
     else
-      return secret.data[:content]
+      return secret.data[:data][:content]
     end
   end
 end
@@ -200,8 +200,9 @@ end
 def vault_write(hostname, secret_name, content)
   puts "Writing #{secret_name}"
   path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  content_hash = { :content => content }
   Vault.with_retries(Vault::HTTPConnectionError) do
-    Vault.logical.write(path, content: content)
+    Vault.logical.write(path, data: content_hash)
   end
 end
 
