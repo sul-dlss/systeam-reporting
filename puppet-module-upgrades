@@ -12,7 +12,7 @@ moduledir = 'modules'
 # puppet_agent - public advertised version older than current version
 # epel - we have our own version that we pretend is the main
 ignoremodules = ['dovecot', 'logrotate', 'transition', 'puppet_agent', 'epel',
-                 'role', 'profile']
+                 'role', 'profile', 'defaults']
 
 # Data for github issue creation.
 @repo  = 'sul-dlss/operations-tasks'
@@ -51,7 +51,7 @@ Dir.foreach(moduledir) do |entry|
   #puts module_name
   #puts forge_url
   #puts forge_data
-  if forge_data['message'] == '404 Not Found'
+  if forge_data['message'] == '404 Not Found' or forge_data['current_release'].nil?
     printf("%-25s No longer exists\n", entry)
     next
   end
