@@ -1,0 +1,45 @@
+#!/usr/bin/perl
+#
+# batch-ssh -- script to take a list of servers and separate them into ssh
+#              commands to through something on all servers
+#
+# batch-ssh <iterations> <fname> [command]
+#
+# iterations: number of batches to split the run into.  4 is usually good.
+# fname: file containing the list of servers to run against
+# command: command to run, defaults to '' (no command, will just give ssh prompt)
+#
+# Output is $iterations number of files named $fname.[0..$iterations].sh that
+# can then be run as shell files.
+
+my ($iterations, $fname, $command) = @ARGV;
+if (defined $command && $command ne '') {
+    $command = "'". $command  . "'";
+} else {
+    $command = '';
+}
+
+# Create the output file handles.
+my @output;
+for my $i (0 .. $iterations - 1) {
+  my $out_fname = $fname . '.' . $i . '.sh';
+  open ($output[$i], '>', $out_fname);
+}
+
+# Iterate through the input file, formatting each line and printing to one of
+# the output files.
+open (my $fh, '<', $fname);
+while (my $line = <$fh>) {
+  chomp $line;
+  $line =~ s#\.stanford\.edu\s*$##;
+  #next unless $. % $iterations == $run;
+  my $i = $. % $iterations;
+  my $out_fh = $output[$i];
+  print $out_fh "echo $line && ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root\@$line $command\n";
+}
+close $fh;
+
+# Close all the output files.
+for my $i (0 .. $iterations - 1) {
+  close $output[$i];
+}

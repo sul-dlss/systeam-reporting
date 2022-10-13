@@ -1,0 +1,43 @@
+#!/usr/bin/perl
+#
+# batch-remctl-puppet -- script to take a list of servers and separate them
+#                        into remctl commands to run puppet in noop for testing
+#
+# batch-remctl-puppet <iterations> <fname> [branch]
+#
+# iterations: number of batches to split the run into.  4 is usually good.
+# fname: file containing the list of servers to run against
+# branch: Puppet branch to run against.  Defaults to production.
+#
+# Output is $iterations number of files named $fname.[0..$iterations].sh that
+# can then be run as shell files.
+
+my ($iterations, $fname, $branch) = @ARGV;
+
+$branch = 'production' unless defined $branch;
+$command = "puppet --test --noop --environment $branch | puppet-filter";
+
+# Create the output file handles.
+my @output;
+for my $i (0 .. $iterations - 1) {
+    my $out_fname = $fname . '.' . $i . '.sh';
+    open ($output[$i], '>', $out_fname);
+}
+
+# Iterate through the input file, formatting each line and printing to one of
+# the output files.
+open (my $fh, '<', $fname);
+while (my $line = <$fh>) {
+    chomp $line;
+    $line =~ s#\.stanford\.edu\s*$##;
+    #next unless $. % $iterations == $run;
+    my $i = $. % $iterations;
+    my $out_fh = $output[$i];
+    print $out_fh "echo $line && remctl $line $command\n";
+}
+close $fh;
+
+# Close all the output files.
+for my $i (0 .. $iterations - 1) {
+    close $output[$i];
+}
