@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+#
+# aws-access-keys: Simple script to find all user access keys in an account
+#
+# This works with the current default account in your aws config file.  To use
+# with other accounts, you'd set the AWS profile on the config line first.
+# Assuming bash, this might be (assuming a profile for users-prod):
+#
+# AWS_PROFILE=users-prod ./aws-access-keys
+#
+# We could have the script go through all accounts, but the profile names will
+# presumably be different between different users.  Unless we make sure we all
+# have the same profile names for each account in our aws config files, that
+# won't really work well.
+
+import boto3
+
+# Simply find all users in the current account, then all access keys for those
+# users.
+iam = boto3.client('iam')
+paginator = iam.get_paginator('list_users')
+for response in paginator.paginate():
+    for user in response['Users']:
+        username = user['UserName']
+        keys = iam.list_access_keys(UserName=username)
+        for key in keys['AccessKeyMetadata']:
+            print('{:<30} {}'.format(username, key['AccessKeyId']))
