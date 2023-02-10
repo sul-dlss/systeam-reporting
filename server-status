@@ -107,7 +107,7 @@ sub check_dns {
 # Find a list of all virtual machines.  This uses the ezmomi python script to
 # do the actual search, then parses the output.
 sub find_all_vms {
-    my $output = `remctl sulcobbler vm-misc list`;
+    my $output = `remctl dlss-provisioner vm-misc list`;
 
     my %servers = ();
     for my $line (split(m{[\r\n]+}, $output)) {
@@ -133,7 +133,7 @@ sub find_all_vms {
 
 # Find hiera status using a remctl command on the puppet machines.
 sub find_hiera_status {
-    my $output = `remctl sulpuppet4-a hiera-status list`;
+    my $output = `remctl sulpuppet6-a hiera-status list`;
 
     my $json_obj = JSON->new->allow_nonref;
     my $hieradata = $json_obj->decode($output);
@@ -143,7 +143,7 @@ sub find_hiera_status {
 
 # Find netdb entries using our provisioning script on sulcobbler.
 sub find_all_netdb {
-    my $output = `remctl sulcobbler netdb list`;
+    my $output = `remctl dlss-provisioner netdb-report list`;
 
     # Massage the output to indent all array lines one step further.  Ruby
     # sends one level less indented than Perl expects, which causes problems.
@@ -152,19 +152,6 @@ sub find_all_netdb {
 
     my ($servers_ref) = Load($output);
     return %{ $servers_ref };
-}
-
-# Find all servers that are set up in cobbler on sulcobbler.
-sub find_all_cobbler {
-    my $output = `remctl sulcobbler cobbler-create system-list`;
-    my @servers = ();
-    for my $hostname (split(m{[\r\n]+}, $output)) {
-        chomp $hostname;
-        $hostname =~ s{^\s+}{};
-        push(@servers, $hostname);
-    }
-
-    return sort(@servers);
 }
 
 #############################################################################
@@ -294,7 +281,7 @@ sub find_hosts {
 
     # Load netdb first so that we can build a mapping of host aliases to
     # canonical server names.  Some servers use a netdb alias as the name
-    # in puppet or cobbler, so we want to bring those all back.
+    # in puppet, so we want to bring those all back.
     my %aliases;
     for my $host (keys %netdb) {
         $hosts{$host}{'netdb'} = $netdb{$host};
@@ -307,10 +294,6 @@ sub find_hosts {
     for my $host (keys %vms) {
         my $canonical = map_host_alias($host, %aliases);
         $hosts{$canonical}{'vmware'} = $vms{$host};
-    }
-    for my $host (find_all_cobbler) {
-        my $canonical = map_host_alias($host, %aliases);
-        $hosts{$canonical}{'cobbler'} = 1;
     }
     for my $host (puppetdb_hosts) {
         my $canonical = map_host_alias($host, %aliases);
@@ -373,7 +356,6 @@ sub human_report {
         $sources[0] = 'P' if exists $hosts{$host}{'puppetdb'};
         $sources[1] = 'N' if exists $hosts{$host}{'netdb'};
         $sources[2] = 'V' if exists $hosts{$host}{'vmware'};
-        $sources[3] = 'C' if exists $hosts{$host}{'cobbler'};
         my $sources = join(' ', @sources);
 
         # Splunk doesn't need to be on non-prod boxes.
@@ -386,7 +368,7 @@ sub human_report {
     }
 
     $output .= "\n";
-    $output .= "Sources: P = Puppet, N = NetDB, V = VMWare, C = Cobbler\n";
+    $output .= "Sources: P = Puppet, N = NetDB, V = VMWare\n";
 
     if ($options->email) {
         mail_report($options->email, $output);
@@ -441,7 +423,7 @@ B<server-status> [B<-h>] [B<--manual>]
 =head1 DESCRIPTION
 
 B<server-status> checks our various sources of system information (puppet,
-vmware, netdb, cobbler) and builds a report based on those facts.  It has
+vmware, netdb) and builds a report based on those facts.  It has
 options to either make a human-readable report with some additional
 information, or to print out just that information as a yaml file.  The yaml
 file doesn't contain as much information, as it's meant to be parsed by
