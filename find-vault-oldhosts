@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+#
+# find-vault-oldhosts: Search vault recursively for kv pairs for dead hosts
+#
+# This iterates through vault secret/ and pupppet/ stores to search for any
+# kv pairs that look like a hostname and then checks them to see if they
+# resolve in DNS.  Those that do not are reported on so they can be looked
+# over and deleted once verified.
+
+import hvac
+import re
+import socket
+import sys
+
+VAULT_PATHS = ['puppet', 'secret']
+VAULT_ADDR  = 'https://vault.sul.stanford.edu/'
+
+# Given a mountpoint and path, look up all children of that path recursively
+# and send back the final endpoints.
+def recursive_list(mount, path):
+    found = []
+    list_response = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount)
+    for subpath in list_response['data']['keys']:
+        newpath = path + subpath
+        if subpath.endswith('/'):
+            found.extend(recursive_list(mount, newpath))
+        else:
+            found.extend([mount + newpath])
+    return found
+
+def main():
+    secrets     = []
+    host_lookup = {}
+
+    # Go through our mountpoints to get every secret in vault.
+    for mount in VAULT_PATHS:
+        secrets.extend(recursive_list(mount, '/'))
+
+    # Now that we have every secret, parse for a hostname in the secret name
+    # and see if that resolves or not.  Hostname is defined as something
+    # between // as a path separator, with three or more period-separated
+    # pieces.  We cache the first lookup for any host in a dict.
+    for secret in secrets:
+        match = re.search('/(([^.]+\.){2,}[^.]+)/', secret)
+        if match:
+            hostname = match.group(1)
+            if hostname in host_lookup:
+                active = host_lookup[hostname]
+            else:
+                try:
+                    socket.gethostbyname(hostname)
+                    active = 1
+                except:
+                    active = 0
+                host_lookup[hostname] = active
+            if active == 0:
+                print(secret)
+    sys.exit()
+
+if __name__ == "__main__":
+    client = hvac.Client(url=VAULT_ADDR)
+    main()
