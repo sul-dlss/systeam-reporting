@@ -14,10 +14,12 @@ require 'optparse'
 REMCTL_SERVER = 'lemon1.stanford.edu'.freeze
 VAULT_SERVER  = 'https://vault.sul.stanford.edu/'.freeze
 VAULT_PATH    = 'puppet/data/'
+VAULT_SWP_PATH = 'puppet/data/common/swp/'
 VAULT_TOKEN   = '/etc/vault.token'
 
 NETDB_SERVER  = 'netdb-api.stanford.edu'
 $skip_netdb   = false
+$swp          = false
 
 GROUP         = 'Libraries'
 CONTACT_EMAIL = 'sul-webmaster@lists.stanford.edu'
@@ -186,7 +188,21 @@ end
 
 def vault_read(hostname, secret_name)
   puts "Reading #{secret_name}"
-  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  # If the swp flag is set then the vault keys are read from 
+  # the value in VAULT_SWP_PATH.
+  # The FQDN is shorted to just the hostname because puppet
+  # is unable to read from vault subdirectories if the 
+  # subdirectory name has periods in it.
+  if $swp == true
+    if secret_name != 'netdb-token'
+      shortname = hostname.split('.')
+      path = "#{VAULT_SWP_PATH}#{shortname.first}/#{secret_name}"
+    else
+      path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+    end
+  else
+    path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  end
   Vault.with_retries(Vault::HTTPConnectionError) do
     secret = Vault.logical.read(path)
     if secret.nil?
@@ -198,8 +214,19 @@ def vault_read(hostname, secret_name)
 end
 
 def vault_write(hostname, secret_name, content)
-  puts "Writing #{secret_name}"
-  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  puts "Writing #{secret_name} to"
+  # If the swp flag is set then the vault keys are written to
+  # the value in VAULT_SWP_PATH.
+  # The FQDN is shorted to just the hostname because puppet
+  # is unable to read from vault subdirectories if the
+  # subdirectory name has periods in it.
+  if $swp == true
+    shortname = hostname.split('.')
+    path = "#{VAULT_SWP_PATH}#{shortname.first}/#{secret_name}"
+  else
+    path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  end
+  puts path
   content_hash = { :content => content }
   Vault.with_retries(Vault::HTTPConnectionError) do
     Vault.logical.write(path, data: content_hash)
@@ -207,8 +234,18 @@ def vault_write(hostname, secret_name, content)
 end
 
 def vault_delete(hostname, secret_name)
-  puts "Deleting #{secret_name}"
-  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  puts "Deleting #{secret_name} from"
+  # If the swp flag is set then the vault keys are deleted from
+  # the value in VAULT_SWP_PATH.
+  # The FQDN is shorted to just the hostname because puppet
+  # is unable to read from vault subdirectories if the
+  # subdirectory name has periods in it.
+  if $swp == true
+    shortname = hostname.split('.')
+    path = "#{VAULT_SWP_PATH}#{shortname.first}/#{secret_name}"
+  else
+    path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  end
   Vault.with_retries(Vault::HTTPConnectionError) do
     Vault.logical.delete(path)
   end
@@ -359,6 +396,7 @@ end
 OptionParser.new do |opts|
   opts.banner = "Usage: cert-remctl <approve|mass-approve|submit> <hostname>"
   opts.on('--skip-netdb', 'Skip netdb alias lookup') { |v| $skip_netdb = v }
+  opts.on('--swp', 'Identify this as an alias on SWP') { |v| $swp = v }
 end.parse!
 
 Vault.address = VAULT_SERVER
