@@ -41,7 +41,7 @@ def main():
     # between // as a path separator, with three or more period-separated
     # pieces.  We cache the first lookup for any host in a dict.
     for secret in secrets:
-        match = re.search('/(([^.]+\.){2,}[^.]+)/', secret)
+        match = re.search('/(([^\/.]+\.){2,}[^.]+)/', secret)
         if match:
             hostname = match.group(1)
             if hostname in host_lookup:
