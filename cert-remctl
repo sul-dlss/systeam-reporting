@@ -11,10 +11,11 @@ require 'json'
 require 'httparty'
 require 'optparse'
 
-REMCTL_SERVER = 'lemon1.stanford.edu'.freeze
-VAULT_SERVER  = 'https://vault.sul.stanford.edu/'.freeze
-VAULT_PATH    = 'puppet/data/'
-VAULT_TOKEN   = '/etc/vault.token'
+CERT_MANAGER_URL = 'https://cert-manager.com/customer/InCommon/ssl'.freeze
+REMCTL_SERVER    = 'lemon1.stanford.edu'.freeze
+VAULT_SERVER     = 'https://vault.sul.stanford.edu/'.freeze
+VAULT_PATH       = 'puppet/data/'
+VAULT_TOKEN      = '/etc/vault.token'
 
 NETDB_SERVER  = 'netdb-api.stanford.edu'
 $skip_netdb   = false
@@ -158,9 +159,10 @@ def json_request(csr, sans)
   request.to_json
 end
 
+# Given a hostname, look up the database id for the item and check to see if
+# it's hit the approval stage.  If so, return the certificate id.
 def approval(hostname)
-  id = vault_read(hostname, 'ssl-id-pending')
-  id.sub!(/^db id: /i, '')
+  id = vault_read(hostname, 'ssl-id-stanford-pending')
 
   command = %w(certreq show)
   command.append(id)
@@ -261,15 +263,24 @@ def do_submit(hostname, sans=[])
   if result.stdout.empty?
     raise "no output from remctl command, exiting"
   end
-
-  # Parse out submit id from the remctl output and save into vault for later.
   puts result.stdout
+
+  # There's a local database id we need for getting the cert after approval,
+  # and an upstream order id from the provider we need for getting the interim
+  # CA directly from them.
   result.stdout =~ /DB id: (\d+)/i
   if $~.nil?
     abort("could not find database id from stdout:\n#{result.stdout}")
   end
-  id = $~[1]
-  vault_write(hostname, 'ssl-id-pending', id)
+  db_id = $~[1]
+  result.stdout =~ /order number (\d+)/i
+  if $~.nil?
+    abort("could not find order number from stdout:\n#{result.stdout}")
+  end
+  incommon_id = $~[1]
+
+  vault_write(hostname, 'ssl-id-stanford-pending', db_id)
+  vault_write(hostname, 'ssl-id-incommon-pending', incommon_id)
 end
 
 # Approve a single certificate that's already gone through the process and
@@ -291,6 +302,7 @@ def do_approve(hostname)
   # don't want to stop the script if they're not there.
   key = vault_read(hostname, 'ssl-key-pending')
   csr = vault_read(hostname, 'ssl-csr-pending')
+  incommon_id = vault_read(hostname, 'ssl-id-incommon-pending')
 
   # Now actually contact remctl to get the approved certificate.
   command = %w(certs show-cert)
@@ -304,18 +316,28 @@ def do_approve(hostname)
   end
   cert = result.stdout
 
+  # Now grab the interim CA from the provider in order to save it as well.
+  query = {
+    action: 'download',
+    sslId: incommon_id,
+    format: 'x509IO',
+  }
+  response = HTTParty.get(CERT_MANAGER_URL, :query   => query)
+  interim_ca = response.body
+
   # Followup from above, only move the pending csr and key into place if they
   # existed.
   unless key.empty? and csr.empty?
     vault_write(hostname, 'ssl-key', key)
     vault_write(hostname, 'ssl-csr', csr)
+    vault_write(hostname, 'ssl-ca', interim_ca)
     vault_delete(hostname, 'ssl-key-pending')
     vault_delete(hostname, 'ssl-csr-pending')
   end
 
   vault_write(hostname, 'ssl-cert', cert)
-  vault_delete(hostname, 'ssl-id-pending')
-
+  vault_delete(hostname, 'ssl-id-incommon-pending')
+  vault_delete(hostname, 'ssl-id-stanford-pending')
 end
 
 # Find all pending certificates and then check each to see if it's already been
@@ -323,7 +345,7 @@ end
 def do_mass_approve ()
 
   # Get the list of hosts with pending certificates, by searching vault for
-  # servers with an ssl-id-pending.
+  # servers with an ssl-id-stanford-pending.
   pending_hosts = []
   servers = vault_list(VAULT_PATH)
   servers.sort.each do |host|
@@ -333,7 +355,7 @@ def do_mass_approve ()
     next if host == 'databases'
 
     host_keys = vault_list("#{VAULT_PATH}#{host}")
-    if host_keys.include?('ssl-id-pending')
+    if host_keys.include?('ssl-id-stanford-pending')
       pending_hosts.push(host)
     end
   end
