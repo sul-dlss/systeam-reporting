@@ -59,6 +59,19 @@ def servers_with_class(classname)
   hosts
 end
 
+# Get all servers in puppet.
+def servers_all
+  hosts = []
+  query = ['=', 'name', 'operatingsystem']
+  response = request('facts', query)
+  response.each do |r|
+    hostname = r['certname']
+    hosts << hostname
+  end
+
+  hosts
+end
+
 # Given a message, send it out as an email.
 def mail_message(subject, content)
   message = ''
@@ -87,6 +100,9 @@ OptionParser.new do |opts|
   opts.on('-s=SUBJECT', '--subject=SUBJECT', 'Subject for mail') do |s|
     options[:subject] = s
   end
+  opts.on('-w', '--without', 'Return servers without the given class') do
+    options[:without] = true
+  end
 end.parse!
 
 # Profile::Webserver::Vhost::webauth
@@ -98,7 +114,21 @@ end.parse!
 servers = []
 ARGV.each do |puppet_class|
   puppet_class = puppet_class.split(':').map(&:capitalize).join(':')
-  servers << servers_with_class(puppet_class)
+  servers.concat servers_with_class(puppet_class)
+end
+
+# If we've searched for servers without the class, get all servers and mark
+# those that weren't found.
+if options[:without]
+  all = servers_all
+  missing = []
+  all.sort.each do |found|
+    unless servers.include?(found)
+      missing << found
+    end
+  end
+
+  servers = missing
 end
 
 # Print out the servers, either in mail or to STDOUT.
