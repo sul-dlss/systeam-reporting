@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+#
+# convert-ip-blocklist: Convert the puppet yaml blocked ips to text for the f5
+#
+
+import sys
+import yaml
+
+fname = sys.argv[1]
+with open(fname, 'r') as f:
+    hieradata = yaml.load(f, Loader=yaml.SafeLoader)
+for ip in hieradata['common::firewall_global_blocked_ips']:
+    print(ip)
