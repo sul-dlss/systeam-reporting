@@ -6,8 +6,67 @@
 import sys
 import yaml
 
-fname = sys.argv[1]
-with open(fname, 'r') as f:
-    hieradata = yaml.load(f, Loader=yaml.SafeLoader)
-for ip in hieradata['common::firewall_global_blocked_ips']:
-    print(ip)
+# Command to run.  Could be either 'print' or 'diff' currently
+command = sys.argv[1]
+# Required to have at least one file path
+file1 = sys.argv[2]
+if command == "print":
+    # If file is Puppet file, then return the list of IPs as a 
+    # IP block to copy/paste into Terraform file
+    if file1.endswith('.eyaml'):
+        with open(file1, 'r') as f:
+            hieradata = yaml.load(f, Loader=yaml.SafeLoader)
+        for ip in hieradata['common::firewall_global_blocked_ips']:
+            print(ip)
+    # If file is TF file, then print out the IP list in 
+    # a format that can be copied into Pupppet
+    else:
+        with open(file1, 'r') as f:
+            tlines = f.readlines()
+            for i in tlines:
+                print("- '" + i.rstrip() + "'")
+elif command == "diff":
+    # Get the second file 
+    file2 = sys.argv[3]
+    # If first file passed is a Puppet file, then return a list of
+    # IP addresses that are in the Puppet hieradata block but not
+    # in the Terraform file
+    if file1.endswith('.eyaml'):
+        with open(file1, 'r') as p:
+            hieradata = yaml.load(p, Loader=yaml.SafeLoader)
+            diff_result = []
+            t = open(file2, 'r')
+            tlines = t.readlines()
+            tlist = []
+            for i in tlines:
+                tlist.append(i.rstrip())
+            for ip in hieradata['common::firewall_global_blocked_ips']:
+                if ip not in tlist:
+                    diff_result.append(ip)
+        if diff_result:
+            print("IPs listed in Puppet but not in Terraform:  ", diff_result)
+        else:
+            print("All IPs listed   in Puppet are in Terraform")
+    # If first file passed is the Terraform file, then return a list of
+    # IP addresses that are in the Terraform file but not
+    # in the Puppet hieradata block
+    else:
+        with open(file1, 'r') as t:
+            tlines = t.readlines()
+            tlist = []
+            for i in tlines:
+                tlist.append(i.rstrip())
+            p = open(file2, 'r+')
+            hieradata = yaml.load(p, Loader=yaml.SafeLoader)
+            diff_result = []
+            for ip in tlist:
+                if ip not in hieradata['common::firewall_global_blocked_ips']:
+                    diff_result.append(ip)
+        if diff_result:
+            print("IPs listed in Terraform but not in Puppet:  ", diff_result)
+        else:
+            print("All IPs listed in Terraform are in Puppet")
+else:
+    print("Command needs to be either 'print' or 'diff'.")
+        
+
