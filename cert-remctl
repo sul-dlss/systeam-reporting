@@ -167,9 +167,6 @@ def approval(hostname)
   command = %w(certreq show)
   command.append(id)
   result = Remctl.remctl(REMCTL_SERVER, *command)
-  if result.stderr != ""
-    raise "stderr: #{result.stderr}"
-  end
   if result.stdout.empty?
     raise "no output from remctl command, exiting"
   end
@@ -257,9 +254,6 @@ def do_submit(hostname, sans=[])
   command = %w(certreq submit)
   command.append(request)
   result = Remctl.remctl(REMCTL_SERVER, *command)
-  if result.stderr != ""
-    raise "stderr: #{result.stderr}"
-  end
   if result.stdout.empty?
     raise "no output from remctl command, exiting"
   end
@@ -308,9 +302,6 @@ def do_approve(hostname)
   command = %w(certs show-cert)
   command.append(cert_id)
   result = Remctl.remctl(REMCTL_SERVER, *command)
-  if result.stderr != ""
-    raise "stderr: #{result.stderr}"
-  end
   if result.stdout.empty?
     raise "no output from remctl command, exiting"
   end
