@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+
+puts 'Enter the path to your puppet repo:'
+repo_path = gets.chomp
+
+modules_to_check = %w[profile role]
+
+puts 'Checking profile and role modules for missing specs...'
+
+manifests_missing_specs = []
+
+modules_to_check.each do |mod|
+  specs = Dir.glob("#{repo_path}/modules/#{mod}/spec/**/*.rb")
+  manifests = Dir.glob("#{repo_path}/modules/#{mod}/manifests/**/*.pp")
+  
+  # we don't need to write specs for these top level init.pp classes
+  manifests.delete("#{repo_path}/modules/#{mod}/manifests/init.pp")
+  
+  manifests.each do |manifest|
+    spec_to_search_for = "#{File.basename(manifest, '.pp')}_spec.rb"
+    matching_spec = specs.detect { |spec| spec.include?(spec_to_search_for) }
+    if matching_spec.nil?
+      manifests_missing_specs << manifest
+    end
+  end
+end
+
+if manifests_missing_specs.empty?
+  puts 'There are no manifests missing specs.'
+else
+  puts "The following manifests need specs:"
+  manifests_missing_specs.each { |m| puts m }
+end
