@@ -11,11 +11,12 @@ require 'json'
 require 'httparty'
 require 'optparse'
 
-CERT_MANAGER_URL = 'https://cert-manager.com/customer/InCommon/ssl'.freeze
-REMCTL_SERVER    = 'lemon1.stanford.edu'.freeze
-VAULT_SERVER     = 'https://vault.sul.stanford.edu/'.freeze
-VAULT_PATH       = 'puppet/data/'
-VAULT_TOKEN      = '/etc/vault.token'
+CERT_MANAGER_URL    = 'https://cert-manager.com/customer/InCommon/ssl'.freeze
+REMCTL_SERVER       = 'lemon1.stanford.edu'.freeze
+VAULT_SERVER        = 'https://vault.sul.stanford.edu/'.freeze
+VAULT_PATH          = 'puppet/data/'
+VAULT_METADATA_PATH = 'puppet/metadata/'
+VAULT_TOKEN         = '/etc/vault.token'
 
 NETDB_SERVER  = 'netdb-api.stanford.edu'
 $skip_netdb   = false
@@ -183,8 +184,8 @@ end
 # Vault
 #######################################################################
 
-def vault_read(hostname, secret_name)
-  puts "Reading #{secret_name}"
+def vault_read(hostname, secret_name, print=true)
+  puts "Reading #{secret_name}" if print
   path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
   Vault.with_retries(Vault::HTTPConnectionError) do
     secret = Vault.logical.read(path)
@@ -275,6 +276,7 @@ def do_submit(hostname, sans=[])
 
   vault_write(hostname, 'ssl-id-stanford-pending', db_id)
   vault_write(hostname, 'ssl-id-incommon-pending', incommon_id)
+  vault_write(hostname, 'ssl-status', 'Pending')
 end
 
 # Approve a single certificate that's already gone through the process and
@@ -313,7 +315,7 @@ def do_approve(hostname)
     sslId: incommon_id,
     format: 'x509IO',
   }
-  response = HTTParty.get(CERT_MANAGER_URL, :query   => query)
+  response = HTTParty.get(CERT_MANAGER_URL, :query => query)
   interim_ca = response.body
 
   # Followup from above, only move the pending csr and key into place if they
@@ -329,25 +331,24 @@ def do_approve(hostname)
   vault_write(hostname, 'ssl-cert', cert)
   vault_delete(hostname, 'ssl-id-incommon-pending')
   vault_delete(hostname, 'ssl-id-stanford-pending')
+  vault_write(hostname, 'ssl-status', 'Done')
 end
 
-# Find all pending certificates and then check each to see if it's already been
-# approved.
 def do_mass_approve ()
-
   # Get the list of hosts with pending certificates, by searching vault for
   # servers with an ssl-id-stanford-pending.
   pending_hosts = []
-  servers = vault_list(VAULT_PATH)
+  servers = vault_list(VAULT_METADATA_PATH)
   servers.sort.each do |host|
     host.tr!('/', '')
     next if host == 'common'
     next if host == 'database'
     next if host == 'databases'
 
-    host_keys = vault_list("#{VAULT_PATH}#{host}")
-    if host_keys.include?('ssl-id-stanford-pending')
-      pending_hosts.push(host)
+    host_keys = vault_list("#{VAULT_METADATA_PATH}#{host}")
+    if host_keys.include?('ssl-status')
+      status = vault_read(host, 'ssl-status', false)
+      pending_hosts.push(host) if status == 'Pending'
     end
   end
 
@@ -375,7 +376,7 @@ OptionParser.new do |opts|
 end.parse!
 
 Vault.address = VAULT_SERVER
-Vault.token   = File.read(VAULT_TOKEN).chomp
+#Vault.token   = File.read(VAULT_TOKEN).chomp
 
 # Match command, exiting if none found.
 input = ARGV.shift
