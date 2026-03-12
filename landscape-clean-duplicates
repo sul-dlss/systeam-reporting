@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+#
+# landscape-clean-duplicates - Go through landscape computers, find any
+# duplicates, and then delete all but the one with newest checkin time.
+
+from datetime import datetime
+import pprint
+import requests
+import socket
+import sys
+
+ACCESS_KEY    = 'J71M9C25WH9DPC3GFMP7'
+ACCESS_SECRET = '0HWIlcJ/ndD9vI3PFbcGuZnYZH2RSe9RAoQOZaWh'
+
+BASE_URL = 'https://landscape.canonical.com/api/v2/'
+
+# Log in to get an access token for further requests.
+login = {
+    'access_key': ACCESS_KEY,
+    'secret_key': ACCESS_SECRET,
+}
+headers =  {"Content-Type":"application/json"}
+response = requests.post(BASE_URL + 'login/access-key', json=login, headers=headers)
+
+if response.status_code != 200:
+    sys.exit(f"Failed to log in: {response.status_code}")
+response_data = response.json()
+token = response_data['token']
+
+# Duplicate computers isn't an alert the API offers, so we have to look
+# for all computers and find the dupes ourself.
+headers =  {"Authorization": f"Bearer {token}"}
+response = requests.get(BASE_URL + 'computers', headers=headers)
+if response.status_code != 200:
+    sys.exit(f"Failed to get computers: {response.status_code}")
+response_data = response.json()
+
+# Save the computers so we can find the ones with dupes.
+computers = {}
+for computer in response_data['results']:
+    hostname = computer['hostname']
+    record = {
+        'id':        computer['id'],
+        'last_time': computer['last_exchange_time'],
+        'title':     computer['title'],
+    }
+    if hostname in computers:
+        computers[hostname].append(record)
+    else:
+        computers[hostname] = [record]
+
+format_string = "%Y-%m-%dT%H:%M:%SZ"
+for hostname, computer in computers.items():
+    if len(computer) == 1:
+        continue
+
+    # Find the latest date amongst all duplicates.
+    largest = ''
+    for duplicate in computer:
+
+        datetime_object = datetime.strptime(duplicate['last_time'], format_string)
+        if largest == '':
+            largest = duplicate['last_time']
+        else:
+            last_datetime_object = datetime.strptime(largest, format_string)
+            if datetime_object > last_datetime_object:
+                largest = duplicate['last_time']
+
+    # Then go through and delete any duplicates that don't have that date.
+    for duplicate in computer:
+        if duplicate['last_time'] == largest:
+            continue
+
+        print("%s\t%s\t%s" % (hostname, duplicate['id'], duplicate['last_time']))
+
+        confirm = { 'computer_title': duplicate['title'] }
+        response = requests.post(BASE_URL + f"computers/{duplicate['id']}/archive", json=confirm, headers=headers)
+        if response.status_code != 200:
+            #print(response.json())
+            sys.exit(f"Failed to get delete computer {hostname}: {response.status_code}")
+
