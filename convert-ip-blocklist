@@ -11,14 +11,14 @@ command = sys.argv[1]
 # Required to have at least one file path
 file1 = sys.argv[2]
 if command == "print":
-    # If file is Puppet file, then return the list of IPs as a 
+    # If file is Puppet file, then return the list of IPs as a
     # IP block to copy/paste into Terraform file
-    if file1.endswith('.eyaml'):
+    if file1.endswith('.yaml'):
         with open(file1, 'r') as f:
             hieradata = yaml.load(f, Loader=yaml.SafeLoader)
         for ip in hieradata['common::firewall_global_blocked_ips']:
             print(ip)
-    # If file is TF file, then print out the IP list in 
+    # If file is TF file, then print out the IP list in
     # a format that can be copied into Pupppet
     else:
         with open(file1, 'r') as f:
@@ -26,12 +26,12 @@ if command == "print":
             for i in tlines:
                 print("- '" + i.rstrip() + "'")
 elif command == "diff":
-    # Get the second file 
+    # Get the second file
     file2 = sys.argv[3]
     # If first file passed is a Puppet file, then return a list of
     # IP addresses that are in the Puppet hieradata block but not
     # in the Terraform file
-    if file1.endswith('.eyaml'):
+    if file1.endswith('.yaml'):
         with open(file1, 'r') as p:
             hieradata = yaml.load(p, Loader=yaml.SafeLoader)
             diff_result = []
@@ -68,5 +68,5 @@ elif command == "diff":
             print("All IPs listed in Terraform are in Puppet")
 else:
     print("Command needs to be either 'print' or 'diff'.")
-        
+
 
