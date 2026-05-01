@@ -1,0 +1,130 @@
+#!/usr/bin/env ruby
+
+#######################################################################
+# Configuration
+#######################################################################
+
+require 'vault'
+require 'json'
+require 'httparty'
+require 'optparse'
+
+VAULT_SERVER        = 'https://vault.sul.stanford.edu/'.freeze
+VAULT_PATH          = 'puppet/data/'
+VAULT_METADATA_PATH = 'puppet/metadata/'
+
+NETDB_SERVER  = 'netdb-api.stanford.edu'
+$skip_netdb   = false
+
+USAGE = <<'_EOU'
+  find-netdb-aliases <hostname>
+_EOU
+
+#######################################################################
+# Class overrides
+#######################################################################
+
+# Extra string classes.
+class String
+
+  # unique string matching
+  def match_abbrev(*args)
+    matches = args.select { |a| a.index(self) == 0 }
+    return matches.length == 1 ? matches.shift : nil
+  end
+
+  def fully_qualify(domain='stanford.edu')
+    # return the string unmolested if it's a fully quallified name, IP address, or HW address
+    return self if self =~ /[.:]/ or self =~ /^([0-9a-f]{12}|[0-9a-f]{2}(-[0-9a-f]{2}){5})$/i
+    return self + '.' + domain
+  end
+
+end
+
+#######################################################################
+# NetDB functions
+#######################################################################
+
+# Get a login token from the oauth2 endpoint.  There are ruby libraries that
+# exist for this, but the main one (oauth2) had problems with some specific
+# settings on authz.itlab.stanford.edu.
+def get_token
+  token_data = vault_read('littlered.stanford.edu', 'netdb-token')
+  credentials = JSON.parse(token_data)
+  encoded  = Base64.urlsafe_encode64("#{credentials['client_id']}:#{credentials['client_secret']}")
+  headers  = { Authorization: "Basic #{encoded}" }
+  query    = { grant_type: credentials['grant_type'] }
+  response = HTTParty.post(credentials['token_endpoint'],
+                           :headers => headers,
+                           :query   => query
+  )
+  raise "Bad response to getting token: #{response.body}" if response.code != 200
+
+  response_json = JSON.parse(response.body)
+  response_json['access_token']
+end
+
+# Look up a node by hostname and return all aliases for that node.
+def get_aliases(hostname)
+  headers  = { Authorization: "Bearer #{@token}", 'Content-Type': 'application/json' }
+  response = HTTParty.get("https://#{NETDB_SERVER}/nodes/#{hostname.fully_qualify}",
+                          :headers => headers)
+  if response.code != 200
+    raise "no node found for #{hostname}"
+  end
+
+  # Parse through the response to find any aliases, and make sure that this is
+  # the main hostname.
+  node_json = JSON.parse(response.body)
+  aliases = []
+  node_json['names'].each do |n|
+    if n['name'] != hostname
+      raise "#{hostname} is an alias for #{n['name']}. Please rerun with hostname #{n['name']}."
+    elsif n.key?('aliases')
+      aliases = (aliases + n['aliases'])
+    end
+  end
+
+  aliases
+end
+
+
+#######################################################################
+# Vault
+#######################################################################
+
+def vault_read(hostname, secret_name, print=true)
+#  puts "Reading #{secret_name}" if print
+  path = "#{VAULT_PATH}#{hostname}/#{secret_name}"
+  Vault.with_retries(Vault::HTTPConnectionError) do
+    secret = Vault.logical.read(path)
+    if secret.nil?
+      return ''
+    else
+      return secret.data[:data][:content]
+    end
+  end
+end
+
+#######################################################################
+# Main program
+#######################################################################
+
+OptionParser.new do |opts|
+  opts.banner = "Usage: find-netdb-aliases <hostname>"
+end.parse!
+
+Vault.address = VAULT_SERVER
+
+host = ARGV.shift
+host = host.fully_qualify
+@token = get_token
+aliases = get_aliases(host)
+
+unless aliases.empty?
+  puts "  - #{host}"
+  aliases.each do |a|
+    puts "  - #{a}"
+  end
+  puts
+end
