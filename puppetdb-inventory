@@ -5,14 +5,14 @@
 
 require 'json'
 require 'httparty'
-require 'active_support/all'
-require 'no_proxy_fix'
+require 'csv'
 
 # Default settings.
 FACTS = %w(ipaddress minsec_level stack operatingsystem operatingsystemrelease).freeze
 
 @puppetdbs = {
-  'v4' => 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4',
+#  'v4' => 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4',
+  'v4' => 'https://dlss-openvoxdb.stanford.edu/pdb/query/v4',
 }
 
 #############################################################################
@@ -32,7 +32,7 @@ def request(endpoint, query = nil, payload = {})
       end
     end
 
-    response = HTTParty.get("#{path}/#{endpoint}", body: options)
+    response = HTTParty.get("#{path}/#{endpoint}", body: options, verify: false)
     tmp_rsp = JSON.parse response.body
     tmp_rsp.each do |r|
       responses.push(r)

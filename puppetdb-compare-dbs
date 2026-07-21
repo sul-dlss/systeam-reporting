@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+#
+# Compares which machines are on old puppetdb to new puppetdb
+
+require 'json'
+require 'httparty'
+require 'csv'
+
+# Default settings.
+FACTS = %w(ipaddress minsec_level stack operatingsystem operatingsystemrelease).freeze
+
+@puppetdbs = {
+  'old' => 'http://sulpuppet-db.stanford.edu:8080/pdb/query/v4',
+  'new' => 'https://dlss-openvoxdb.stanford.edu/pdb/query/v4',
+}
+
+#############################################################################
+# PuppetDB functions
+#############################################################################
+
+def request(server, endpoint, query = nil, payload = {})
+  responses = []
+  options = { 'query' => query.to_json }
+  payload.each do |k, v|
+    options[k.to_s] = v
+  end
+
+  response = HTTParty.get("#{server}/#{endpoint}", body: options, verify: false)
+  tmp_rsp = JSON.parse response.body
+  tmp_rsp.each do |r|
+    responses.push(r)
+  end
+
+  responses
+end
+
+#############################################################################
+# Common functions
+#############################################################################
+
+# Do a query for all nodes on a puppetdb server.
+def node_data(server)
+  hosts = {}
+  response = request(server, 'nodes', ['~', ['fact', 'fqdn'], '^.*$'])
+  response.each do |r|
+    hostname = r['certname'] || r['name']
+    hosts[hostname] = r
+  end
+
+  hosts
+end
+
+#############################################################################
+# Main routine
+#############################################################################
+
+oldhosts = {}
+newhosts = {}
+
+oldhosts = node_data(@puppetdbs['old'])
+newhosts = node_data(@puppetdbs['new'])
+oldhosts.keys.sort.each do |old|
+  next if newhosts.keys.include?(old)
+  puts old
+end
