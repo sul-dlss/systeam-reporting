@@ -34,6 +34,20 @@ def request(server, endpoint, query = nil, payload = {})
   responses
 end
 
+def fact_request(server, endpoint, name, payload = {})
+  responses = []
+
+  response = HTTParty.get("#{server}/#{endpoint}/#{name}",
+                          timeout: 120,
+                         )
+  tmp_rsp = JSON.parse response.body
+  tmp_rsp.each do |r|
+    responses.push(r)
+  end
+
+  responses
+end
+
 #############################################################################
 # Common functions
 #############################################################################
@@ -50,16 +64,50 @@ def node_data(server)
   hosts
 end
 
+# Given the name of a class, return all hosts that use that class.
+def servers_with_fact(server, factname)
+  servers = {}
+  response = fact_request(server, 'facts', factname)
+  response.each do |r|
+    hostname = r['certname'] || r['name']
+    factname = r['value']
+    servers[hostname] = factname
+  end
+
+  servers
+end
+
 #############################################################################
 # Main routine
 #############################################################################
 
 oldhosts = {}
-newhosts = {}
+facts   = []
+ARGV.each do |fact_name|
+  facts.push(fact_name)
+  s = servers_with_fact(@puppetdbs['old'], fact_name)
+  s.keys.each do |host|
+    oldhosts[host] = {} unless oldhosts.key?(host)
+    oldhosts[host][fact_name] = s[host]
+  end
+end
 
-oldhosts = node_data(@puppetdbs['old'])
+newhosts = {}
 newhosts = node_data(@puppetdbs['new'])
 oldhosts.keys.sort.each do |old|
   next if newhosts.keys.include?(old)
-  puts old
+
+  ordered = []
+  facts.each do |fact|
+    if oldhosts[old].key?(fact)
+      fact_value = oldhosts[old][fact]
+    else
+      fact_value = '-'
+    end
+    ordered.push(fact_value)
+
+  end
+  fact_output = ordered.join ("\t")
+  puts "#{old}\t#{fact_output}"
 end
+

@@ -7,7 +7,6 @@ require 'httparty'
 require 'net/smtp'
 require 'optparse'
 require 'yaml'
-require 'active_support/all'
 
 EMAIL_TO = 'sul-sysadmin-rpts@lists.stanford.edu'.freeze
 
