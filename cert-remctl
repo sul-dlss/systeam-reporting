@@ -59,7 +59,7 @@ end
 # exist for this, but the main one (oauth2) had problems with some specific
 # settings on authz.itlab.stanford.edu.
 def get_token
-  token_data = vault_read('littlered.stanford.edu', 'netdb-token')
+  token_data = vault_read('dlss-provisioner.stanford.edu', 'netdb-token')
   credentials = JSON.parse(token_data)
   encoded  = Base64.urlsafe_encode64("#{credentials['client_id']}:#{credentials['client_secret']}")
   headers  = { Authorization: "Basic #{encoded}" }
@@ -376,7 +376,7 @@ OptionParser.new do |opts|
 end.parse!
 
 Vault.address = VAULT_SERVER
-#Vault.token   = File.read(VAULT_TOKEN).chomp
+Vault.token   = File.read(VAULT_TOKEN).chomp
 
 # Match command, exiting if none found.
 input = ARGV.shift
