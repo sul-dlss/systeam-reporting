@@ -4,15 +4,14 @@
 # Configuration
 #######################################################################
 
-require 'remctl'
 require 'vault'
 require 'openssl'
 require 'json'
 require 'httparty'
 require 'optparse'
 
-CERT_MANAGER_URL    = 'https://cert-manager.com/customer/InCommon/ssl'.freeze
-REMCTL_SERVER       = 'lemon1.stanford.edu'.freeze
+CERT_API_BASE_URL   = 'https://certprovision-prod.iam.stanford.edu'.freeze
+CERT_API_TOKEN_URL  = 'https://keycloak.svc.stanford.edu/auth/realms/stanford-oauth-prod/protocol/openid-connect/token'.freeze
 VAULT_SERVER        = 'https://vault.sul.stanford.edu/'.freeze
 VAULT_PATH          = 'puppet/data/'
 VAULT_METADATA_PATH = 'puppet/metadata/'
@@ -25,9 +24,10 @@ GROUP         = 'Libraries'
 CONTACT_EMAIL = 'sul-webmaster@lists.stanford.edu'
 
 USAGE = <<'_EOU'
-  cert-remctl submit <hostname> [san] [san] [--skip-netdb]
-  cert-remctl approve <hostname>
-  cert-remctl mass-approve
+  cert-provision link-netdb <hostname>
+  cert-provision submit <hostname> [san] [san] [--skip-netdb]
+  cert-provision approve <hostname>
+  cert-provision mass-approve
 _EOU
 
 #######################################################################
@@ -74,6 +74,39 @@ def get_token
   response_json['access_token']
 end
 
+# Get a login token for Stanford's Certificate Manager API (OAuth2 client
+# credentials flow via Keycloak). Requires a client_id/client_secret pair
+# from UIT's Authentication and Collaboration team, stored in vault.
+def get_cert_api_token
+  creds = JSON.parse(vault_read('dlss-provisioner.stanford.edu', 'cert-manager-credentials'))
+  response = HTTParty.post(CERT_API_TOKEN_URL,
+    body: {
+      grant_type:    'client_credentials',
+      client_id:     creds['client_id'],
+      client_secret: creds['client_secret'],
+    }
+  )
+  raise "Bad response getting cert API token: #{response.body}" if response.code != 200
+
+  JSON.parse(response.body)['access_token']
+end
+
+# Fetch an issued certificate (or its chain) from Stanford's Certificate
+# Manager API. Returns nil on 404, which we treat as "not yet approved" --
+# the API has no separate, properly-authorized status endpoint to poll
+# instead (an id-based one exists but isn't scoped to the requesting
+# client's hostnames, so it's not safe to rely on).
+def fetch_certificate(hostname, token, type)
+  response = HTTParty.get("#{CERT_API_BASE_URL}/cert/#{hostname}",
+    headers: { 'Authorization' => "Bearer #{token}" },
+    query:   { type: type }
+  )
+  return nil if response.code == 404
+  raise "Certificate Manager API cert fetch failed (#{response.code}): #{response.body}" if response.code != 200
+
+  response.body
+end
+
 # Look up a node by hostname and return all aliases for that node.
 def get_aliases(hostname)
   headers  = { Authorization: "Bearer #{@token}", 'Content-Type': 'application/json' }
@@ -96,6 +129,29 @@ def get_aliases(hostname)
   end
 
   aliases
+end
+
+# Read a single NetDB custom field for a node, or nil if it isn't set.
+def get_custom_field(hostname, label)
+  headers  = { Authorization: "Bearer #{@token}" }
+  response = HTTParty.get("https://#{NETDB_SERVER}/nodes/#{hostname}/custom-fields/#{label}",
+                          :headers => headers)
+  return nil if response.code == 404
+  raise "could not read custom field #{label} for #{hostname}: #{response.body}" if response.code != 200
+
+  fields = JSON.parse(response.body)['custom fields']
+  field = fields.find { |f| f['label'] == label }
+  field && field['value']
+end
+
+# Set a single NetDB custom field for a node. The API wants the raw value as
+# the request body, not a JSON-quoted string -- sending it JSON-encoded
+# stores the literal quote characters as part of the value.
+def set_custom_field(hostname, label, value)
+  headers  = { Authorization: "Bearer #{@token}", 'Content-Type' => 'application/json' }
+  response = HTTParty.put("https://#{NETDB_SERVER}/nodes/#{hostname}/custom-fields/#{label}",
+                          :headers => headers, :body => value)
+  raise "could not set custom field #{label} for #{hostname}: #{response.body}" if response.code != 200
 end
 
 #######################################################################
@@ -152,32 +208,12 @@ def json_request(csr, sans)
   request = {
     'csr'           => csr,
     'contact_email' => CONTACT_EMAIL,
-    'server_type'   => 'Apache/ModSSL',
-    'duration'      => '1',
-    'sans'          => sans,
+    'server_type'   => 'Apache',
+    'duration'      => 199,
   }
+  request['sans'] = sans unless sans.empty?
 
   request.to_json
-end
-
-# Given a hostname, look up the database id for the item and check to see if
-# it's hit the approval stage.  If so, return the certificate id.
-def approval(hostname)
-  id = vault_read(hostname, 'ssl-id-stanford-pending')
-
-  command = %w(certreq show)
-  command.append(id)
-  result = Remctl.remctl(REMCTL_SERVER, *command)
-  if result.stdout.empty?
-    raise "no output from remctl command, exiting"
-  end
-
-  # Parse out submit id from the remctl output and save into vault for later.
-  result.stdout =~ /certificate id:\s+(\d+)/i
-  if $~.nil?
-    return nil
-  end
-  $~[1]
 end
 
 #######################################################################
@@ -245,37 +281,29 @@ def do_submit(hostname, sans=[])
   vault_write(hostname, 'ssl-key-pending', pending_key)
   vault_write(hostname, 'ssl-csr-pending', pending_csr)
 
-  # Create a json document to hand to remctl.
+  # Create a json document for the Certificate Manager API.
   request = json_request(pending_csr, sans)
 
   File.write("certs/#{hostname}.csr", pending_csr)
   File.write("certs/#{hostname}.key", pending_key)
 
-  # Send the request to remctl.
-  command = %w(certreq submit)
-  command.append(request)
-  result = Remctl.remctl(REMCTL_SERVER, *command)
-  if result.stdout.empty?
-    raise "no output from remctl command, exiting"
+  # Submit via Stanford's Certificate Manager API. Issuance is
+  # asynchronous: the certificate arrives by email to CONTACT_EMAIL once
+  # ready, but `approve`/`mass-approve` below can also fetch it directly.
+  token    = get_cert_api_token
+  response = HTTParty.post("#{CERT_API_BASE_URL}/api/submit",
+    headers: { 'Authorization' => "Bearer #{token}", 'Content-Type' => 'application/json' },
+    body:    request
+  )
+  if response.code != 200
+    raise "Certificate Manager API submit failed (#{response.code}): #{response.body}"
   end
-  puts result.stdout
+  puts response.body
 
-  # There's a local database id we need for getting the cert after approval,
-  # and an upstream order id from the provider we need for getting the interim
-  # CA directly from them.
-  result.stdout =~ /DB id: (\d+)/i
-  if $~.nil?
-    abort("could not find database id from stdout:\n#{result.stdout}")
-  end
-  db_id = $~[1]
-  result.stdout =~ /order number (\d+)/i
-  if $~.nil?
-    abort("could not find order number from stdout:\n#{result.stdout}")
-  end
-  incommon_id = $~[1]
+  submission = JSON.parse(response.body)
 
-  vault_write(hostname, 'ssl-id-stanford-pending', db_id)
-  vault_write(hostname, 'ssl-id-incommon-pending', incommon_id)
+  vault_write(hostname, 'ssl-id-stanford-pending', submission['id'].to_s)
+  vault_write(hostname, 'ssl-id-incommon-pending', submission['order_number'].to_s)
   vault_write(hostname, 'ssl-status', 'Pending')
 end
 
@@ -283,55 +311,51 @@ end
 # been approved by the SSL provider.  This means getting the approved cert and
 # saving it to puppet along with updating the pending entries.
 def do_approve(hostname)
-  Dir.mkdir('certs') unless File.directory?('certs')
+  token = get_cert_api_token
 
-  # Use the request id to then get the certificate approval id, if done.
-  cert_id = approval(hostname)
-  if cert_id.nil?
+  cert = fetch_certificate(hostname, token, 'cert')
+  if cert.nil?
     abort("certificate is not yet approved")
   end
+  chain = fetch_certificate(hostname, token, 'chain')
 
   # We might be renewing an existing cert request or approving a new one.  In
   # the latter case, we've saved two -pending records that we want to move to
-  # non-pending.  In the latter, we only want to update the cert.  Either way,
-  # only exit on failures after we've tried to read the pending files, since we
-  # don't want to stop the script if they're not there.
+  # non-pending.  In the latter, we only want to update the cert.
   key = vault_read(hostname, 'ssl-key-pending')
   csr = vault_read(hostname, 'ssl-csr-pending')
-  incommon_id = vault_read(hostname, 'ssl-id-incommon-pending')
 
-  # Now actually contact remctl to get the approved certificate.
-  command = %w(certs show-cert)
-  command.append(cert_id)
-  result = Remctl.remctl(REMCTL_SERVER, *command)
-  if result.stdout.empty?
-    raise "no output from remctl command, exiting"
-  end
-  cert = result.stdout
-
-  # Now grab the interim CA from the provider in order to save it as well.
-  query = {
-    action: 'download',
-    sslId: incommon_id,
-    format: 'x509IO',
-  }
-  response = HTTParty.get(CERT_MANAGER_URL, :query => query)
-  interim_ca = response.body
-
-  # Followup from above, only move the pending csr and key into place if they
-  # existed.
   unless key.empty? and csr.empty?
     vault_write(hostname, 'ssl-key', key)
     vault_write(hostname, 'ssl-csr', csr)
-    vault_write(hostname, 'ssl-ca', interim_ca)
     vault_delete(hostname, 'ssl-key-pending')
     vault_delete(hostname, 'ssl-csr-pending')
   end
 
+  vault_write(hostname, 'ssl-ca', chain) unless chain.nil?
   vault_write(hostname, 'ssl-cert', cert)
   vault_delete(hostname, 'ssl-id-incommon-pending')
   vault_delete(hostname, 'ssl-id-stanford-pending')
   vault_write(hostname, 'ssl-status', 'Done')
+end
+
+# Authorize a hostname for UIT's Certificate Manager API by setting its
+# NetDB KEYCLOAK_ID custom field to our client id -- the self-service step
+# UIT's flow requires per hostname, scripted here instead of the NetDB web
+# UI. Kept as its own command rather than folded into `submit`, since this
+# is the actual per-host authorization decision, not incidental setup.
+def do_link_netdb(hostname)
+  client_id = JSON.parse(vault_read('dlss-provisioner.stanford.edu', 'cert-manager-credentials'))['client_id']
+
+  current = get_custom_field(hostname, 'KEYCLOAK_ID')
+  if current == client_id
+    puts "#{hostname} already linked to #{client_id}"
+    return
+  end
+
+  puts "#{hostname} KEYCLOAK_ID is currently '#{current}', updating to '#{client_id}'" unless current.nil?
+  set_custom_field(hostname, 'KEYCLOAK_ID', client_id)
+  puts "Linked #{hostname} to Keycloak client #{client_id}"
 end
 
 def do_mass_approve ()
@@ -371,7 +395,7 @@ end
 #######################################################################
 
 OptionParser.new do |opts|
-  opts.banner = "Usage: cert-remctl <approve|mass-approve|submit> <hostname>"
+  opts.banner = "Usage: cert-provision <approve|mass-approve|submit|link-netdb> <hostname>"
   opts.on('--skip-netdb', 'Skip netdb alias lookup') { |v| $skip_netdb = v }
 end.parse!
 
@@ -381,7 +405,7 @@ Vault.token   = File.read(VAULT_TOKEN).chomp
 # Match command, exiting if none found.
 input = ARGV.shift
 usage unless input
-command = input.downcase.match_abbrev('submit', 'approve', 'mass-approve')
+command = input.downcase.match_abbrev('submit', 'approve', 'mass-approve', 'link-netdb')
 raise "unknown command \"#{input}\"" unless command
 
 # Get the host to act on, and fully qualify the name if needed before passing
@@ -395,4 +419,7 @@ elsif command == 'mass-approve'
   do_mass_approve()
 elsif command == 'approve'
   do_approve(host.fully_qualify)
+elsif command == 'link-netdb'
+  @token = get_token
+  do_link_netdb(host.fully_qualify)
 end
