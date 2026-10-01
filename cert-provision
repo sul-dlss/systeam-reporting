@@ -184,8 +184,9 @@ def openssl_csr(key, hostname, sans)
   # If subject alt names were requested, set up the extensions for that.
   unless sans.empty?
 
-    # Format the hosts up in the format needed.
-    san_list = sans.map { |san_host| "DNS:#{san_host.fully_qualify}" }
+    # Format the hosts up in the format needed. The API requires the primary
+    # hostname to be among the SANs whenever any are present.
+    san_list = ([hostname] + sans).map { |h| "DNS:#{h.fully_qualify}" }.uniq
     extensions = [
       OpenSSL::X509::ExtensionFactory.new.create_extension('subjectAltName', san_list.join(','))
     ]
@@ -200,7 +201,7 @@ def openssl_csr(key, hostname, sans)
     end
   end
 
-  request.sign(key, OpenSSL::Digest::SHA1.new)
+  request.sign(key, OpenSSL::Digest::SHA256.new)
 end
 
 def json_request(csr, sans)
@@ -211,7 +212,7 @@ def json_request(csr, sans)
     'server_type'   => 'Apache',
     'duration'      => 199,
   }
-  request['sans'] = sans unless sans.empty?
+  request['sans'] = sans.map(&:fully_qualify).uniq unless sans.empty?
 
   request.to_json
 end
